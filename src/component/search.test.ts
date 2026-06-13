@@ -85,3 +85,32 @@ describe("search", () => {
     expect(r.hits.length).toBe(3);
   });
 });
+
+describe("typo-tolerant prefix search", () => {
+  it("prefix matches the last token (search-as-you-type)", async () => {
+    const t = await setup();
+    const r = await t.query(api.search.search, { collection: "products", q: "run" });
+    expect(r.found).toBe(2); // running (p1,p2) + runners (p1)
+  });
+
+  it("prefix only applies to the LAST token", async () => {
+    const t = await setup();
+    expect((await t.query(api.search.search, { collection: "products", q: "run shoe" })).found).toBe(0);
+    expect((await t.query(api.search.search, { collection: "products", q: "shoe run" })).found).toBe(1);
+  });
+
+  it("tolerates a typo within budget", async () => {
+    const t = await setup();
+    expect((await t.query(api.search.search, { collection: "products", q: "runing" })).found).toBe(2);
+  });
+
+  it("ranks exact above prefix above typo via text_match", async () => {
+    const t = await setup();
+    const exact = await t.query(api.search.search, { collection: "products", q: "running" });
+    expect(exact.hits[0].text_match).toBe(3);
+    const prefix = await t.query(api.search.search, { collection: "products", q: "run" });
+    expect(prefix.hits[0].text_match).toBe(2);
+    const typo = await t.query(api.search.search, { collection: "products", q: "runing" });
+    expect(typo.hits[0].text_match).toBe(1.5);
+  });
+});

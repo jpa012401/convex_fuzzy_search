@@ -11,6 +11,7 @@
 import type * as collections from "../collections.js";
 import type * as fuzzy from "../fuzzy.js";
 import type * as http from "../http.js";
+import type * as matching from "../matching.js";
 import type * as search from "../search.js";
 import type * as terms from "../terms.js";
 import type * as tokenizer from "../tokenizer.js";
@@ -28,6 +29,7 @@ const fullApi: ApiFromModules<{
   collections: typeof collections;
   fuzzy: typeof fuzzy;
   http: typeof http;
+  matching: typeof matching;
   search: typeof search;
   terms: typeof terms;
   tokenizer: typeof tokenizer;
