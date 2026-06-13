@@ -1,4 +1,5 @@
-// Placeholder — replaced by the ecommerce storefront in Task 11.
+import { Storefront } from "./Storefront";
+
 export default function App() {
-  return null;
+  return <Storefront />;
 }
