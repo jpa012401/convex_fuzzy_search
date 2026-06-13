@@ -45,6 +45,8 @@ export class TypesenseSearch {
       name: string;
       searchFields: string[];
       storedFields?: "all" | string[];
+      filterFields?: { field: string; type: "string" | "number" }[];
+      facetFields?: string[];
     },
   ) {
     return ctx.runMutation(this.component.collections.createCollection, args);
@@ -92,6 +94,9 @@ export class TypesenseSearch {
       page?: number;
       perPage?: number;
       queryBy?: string[];
+      filterBy?: string;
+      facetBy?: string[];
+      maxFacetValues?: number;
     },
   ): Promise<SearchResult> {
     return ctx.runQuery(this.component.search.search, args);
