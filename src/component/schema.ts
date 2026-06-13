@@ -7,6 +7,15 @@ export default defineSchema({
     searchFields: v.array(v.string()),
     // "all" stores the whole doc; otherwise an explicit projection.
     storedFields: v.union(v.literal("all"), v.array(v.string())),
+    filterFields: v.optional(
+      v.array(
+        v.object({
+          field: v.string(),
+          type: v.union(v.literal("string"), v.literal("number")),
+        }),
+      ),
+    ),
+    facetFields: v.optional(v.array(v.string())),
   }).index("by_name", ["name"]),
 
   documents: defineTable({

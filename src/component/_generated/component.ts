@@ -28,6 +28,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         {
+          facetFields?: Array<string>;
+          filterFields?: Array<{ field: string; type: "string" | "number" }>;
           name: string;
           searchFields: Array<string>;
           storedFields?: "all" | Array<string>;

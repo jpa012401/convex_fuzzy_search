@@ -81,3 +81,47 @@ describe("collections", () => {
     expect(leftover.trigrams).toEqual([]);
   });
 });
+
+describe("filter/facet field config", () => {
+  it("stores filterFields and facetFields", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.collections.createCollection, {
+      name: "products",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [
+        { field: "brand", type: "string" },
+        { field: "price", type: "number" },
+      ],
+      facetFields: ["brand"],
+    });
+    const c = await t.query(api.collections.getCollection, { name: "products" });
+    expect(c).toMatchObject({
+      filterFields: [
+        { field: "brand", type: "string" },
+        { field: "price", type: "number" },
+      ],
+      facetFields: ["brand"],
+    });
+  });
+
+  it("rejects filter/facet fields not covered by a storedFields projection", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.mutation(api.collections.createCollection, {
+        name: "products",
+        searchFields: ["name"],
+        storedFields: ["name"],
+        filterFields: [{ field: "brand", type: "string" }],
+      }),
+    ).rejects.toThrow(/storedFields/);
+    await expect(
+      t.mutation(api.collections.createCollection, {
+        name: "p2",
+        searchFields: ["name"],
+        storedFields: ["name"],
+        facetFields: ["brand"],
+      }),
+    ).rejects.toThrow(/storedFields/);
+  });
+});

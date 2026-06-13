@@ -21,19 +21,46 @@ export const createCollection = mutation({
   args: {
     name: v.string(),
     searchFields: v.array(v.string()),
-    storedFields: v.optional(
-      v.union(v.literal("all"), v.array(v.string())),
+    storedFields: v.optional(v.union(v.literal("all"), v.array(v.string()))),
+    filterFields: v.optional(
+      v.array(
+        v.object({
+          field: v.string(),
+          type: v.union(v.literal("string"), v.literal("number")),
+        }),
+      ),
     ),
+    facetFields: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const existing = await loadCollection(ctx, args.name);
     if (existing !== null) {
       throw new Error(`Collection "${args.name}" already exists`);
     }
+    const storedFields = args.storedFields ?? "all";
+    if (storedFields !== "all") {
+      const persisted = new Set(storedFields);
+      for (const f of args.filterFields ?? []) {
+        if (!persisted.has(f.field)) {
+          throw new Error(
+            `filterFields field "${f.field}" must be included in storedFields`,
+          );
+        }
+      }
+      for (const f of args.facetFields ?? []) {
+        if (!persisted.has(f)) {
+          throw new Error(
+            `facetFields field "${f}" must be included in storedFields`,
+          );
+        }
+      }
+    }
     await ctx.db.insert("collections", {
       name: args.name,
       searchFields: args.searchFields,
-      storedFields: args.storedFields ?? "all",
+      storedFields,
+      filterFields: args.filterFields,
+      facetFields: args.facetFields,
     });
   },
 });

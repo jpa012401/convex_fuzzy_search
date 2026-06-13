@@ -9,6 +9,7 @@
  */
 
 import type * as collections from "../collections.js";
+import type * as filter from "../filter.js";
 import type * as fuzzy from "../fuzzy.js";
 import type * as http from "../http.js";
 import type * as matching from "../matching.js";
@@ -27,6 +28,7 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   collections: typeof collections;
+  filter: typeof filter;
   fuzzy: typeof fuzzy;
   http: typeof http;
   matching: typeof matching;
