@@ -54,6 +54,14 @@ export const deleteCollection = mutation({
         .collect();
       for (const r of rows) await ctx.db.delete(r._id);
     }
+    // terms + trigrams are keyed by [collection, term], not [collection, docId]
+    for (const table of ["terms", "trigrams"] as const) {
+      const rows = await ctx.db
+        .query(table)
+        .withIndex("by_collection_term", (q) => q.eq("collection", args.name))
+        .collect();
+      for (const r of rows) await ctx.db.delete(r._id);
+    }
     await ctx.db.delete(c._id);
   },
 });

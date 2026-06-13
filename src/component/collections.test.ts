@@ -41,7 +41,7 @@ describe("collections", () => {
     ).toBeNull();
   });
 
-  it("deleteCollection removes the collection, its documents, and postings", async () => {
+  it("deleteCollection removes the collection, its documents, postings, terms, and trigrams", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.collections.createCollection, {
       name: "products",
@@ -66,8 +66,18 @@ describe("collections", () => {
         .query("postings")
         .withIndex("by_collection_doc", (q) => q.eq("collection", "products"))
         .collect(),
+      terms: await ctx.db
+        .query("terms")
+        .withIndex("by_collection_term", (q) => q.eq("collection", "products"))
+        .collect(),
+      trigrams: await ctx.db
+        .query("trigrams")
+        .withIndex("by_collection_term", (q) => q.eq("collection", "products"))
+        .collect(),
     }));
     expect(leftover.docs).toEqual([]);
     expect(leftover.postings).toEqual([]);
+    expect(leftover.terms).toEqual([]);
+    expect(leftover.trigrams).toEqual([]);
   });
 });
