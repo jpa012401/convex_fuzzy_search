@@ -9,11 +9,11 @@ maintain: writes are durable Convex mutations and become searchable
 immediately.
 
 > **Status.** This release delivers tokenized search with prefix matching,
-> typo tolerance, and relevance ranking, all with Typesense-shaped output.
-> Filtering/faceting, highlighting, and large-scale hardening are planned for
-> later phases — see [Roadmap & limitations](#roadmap--limitations) and the
-> [design specs](#design-specs). Document and result shapes are designed to be
-> forward-compatible with those phases.
+> typo tolerance, relevance ranking, and structured filtering + faceting, all
+> with Typesense-shaped output. Highlighting and large-scale hardening are
+> planned for later phases — see [Roadmap & limitations](#roadmap--limitations)
+> and the [design specs](#design-specs). Document and result shapes are designed
+> to be forward-compatible with those phases.
 
 Found a bug? Feature request?
 [File it here](https://github.com/elevatech/typesense-search/issues).
@@ -28,6 +28,11 @@ Found a bug? Feature request?
   bounded Levenshtein distance check, with a per-token-length typo budget.
 - **Relevance ranking** — hits are scored by a `text_match` value (exact beats
   prefix beats typo) and returned best-first.
+- **Structured filtering** — constrain results with a Typesense-style
+  `filter_by` expression: exact matches, in-set membership, numeric comparators
+  and ranges, combined with `&&`/`||` and parentheses.
+- **Faceting** — request `facet_counts` for declared facet fields, computed over
+  the current filtered + searched result set.
 - **Typesense-shaped output** — `{ found, page, out_of, search_time_ms, hits,
   facet_counts }` so you can map an existing Typesense UI onto Convex.
 - **Synchronous writes** — documents are searchable the moment the upsert
@@ -123,7 +128,15 @@ runnable example.
       "text_match": 5     // relevance score; higher is better (0 in browse mode)
     }
   ],
-  "facet_counts": []      // always [] (faceting not implemented yet)
+  "facet_counts": [       // one entry per requested facetBy field; [] if none requested
+    {
+      "field_name": "brand",
+      "counts": [
+        { "value": "Aurora", "count": 2 },
+        { "value": "Nimbus", "count": 1 }
+      ]
+    }
+  ]
 }
 ```
 
@@ -132,12 +145,26 @@ runnable example.
 All methods take the Convex `ctx` as their first argument. Mutating methods must
 be called from a mutation (or action); read methods from a query (or action).
 
-### `createCollection(ctx, { name, searchFields, storedFields? })`
+### `createCollection(ctx, { name, searchFields, storedFields?, filterFields?, facetFields? })`
 
 Creates a collection. `searchFields` is the list of document fields that are
 tokenized and indexed for matching. `storedFields` controls the projection
 returned in hits — `"all"` (default behavior in the example) stores the whole
-document, or pass a `string[]` to store only those fields. Call from a mutation.
+document, or pass a `string[]` to store only those fields.
+
+- `filterFields` — optional `{ field: string, type: "string" | "number" }[]`
+  declaring which fields may appear in a `filter_by` expression and how each is
+  compared (string equality vs. numeric). A field must be declared here to be
+  filterable.
+- `facetFields` — optional `string[]` declaring which fields may be requested via
+  `facetBy`.
+
+When `storedFields` is an explicit list (not `"all"`), every `filterFields`
+field and every `facetFields` field **must** be included in `storedFields` —
+this is validated at `createCollection` time and throws otherwise. (With
+`storedFields: "all"` the whole document is stored, so no subset check applies.)
+
+Call from a mutation.
 
 ### `getCollection(ctx, name)`
 
@@ -165,7 +192,7 @@ mutation.
 Removes the document with the given `id` from the collection. Call from a
 mutation.
 
-### `search(ctx, { collection, q, page?, perPage?, queryBy? })`
+### `search(ctx, { collection, q, page?, perPage?, queryBy?, filterBy?, facetBy?, maxFacetValues? })`
 
 Runs a search and returns a [`SearchResult`](#search-output-shape).
 
@@ -176,8 +203,65 @@ Runs a search and returns a [`SearchResult`](#search-output-shape).
 - `queryBy` — optional `string[]` restricting which fields are allowed to match
   for this query (a subset of the collection's `searchFields`). Omit to match
   across all indexed fields.
+- `filterBy` — optional `filter_by` expression (see
+  [Filtering](#filtering-filter_by)) that constrains the result set by field
+  value. Empty/whitespace-only is ignored.
+- `facetBy` — optional `string[]` of facet fields to count over the result set.
+  Each must be a declared `facetFields` field, otherwise the query throws.
+- `maxFacetValues` — optional cap on how many distinct values are returned per
+  facet field. Defaults to `10`.
 
 Call from a query.
+
+## Filtering (`filter_by`)
+
+Pass `filterBy` to constrain the matched + filtered result set. The expression
+is evaluated against each document's **stored** fields, and every field
+referenced must be declared in the collection's `filterFields`.
+
+Supported clause forms (where `field` is a declared filter field):
+
+| Form | Meaning |
+| --- | --- |
+| `field:value` | exact match (string equality, or numeric equality for `number` fields) |
+| `field:[a,b,c]` | in-set — matches any of the listed values |
+| `field:>n`, `field:>=n`, `field:<n`, `field:<=n` | numeric comparator (numeric fields only) |
+| `field:[lo..hi]` | numeric range, inclusive on both ends (numeric fields only) |
+
+Clauses combine with `&&` (AND) and `||` (OR), and may be grouped with
+parentheses. `&&` binds tighter than `||`, so `a:1 && b:2 || c:3` parses as
+`(a:1 && b:2) || c:3`. Use parentheses to override.
+
+Values containing spaces (or filter punctuation) must be **double-quoted**:
+`brand:"Acme Corp"`. Comparators and ranges require a field declared as
+`type: "number"`; using them on a string field — or passing a non-numeric
+value where a number is expected — throws a parse error. Referencing a field
+that is not declared in `filterFields` also throws.
+
+Examples:
+
+```text
+category:Shoes
+brand:[Aurora,Nimbus]
+price:>50
+price:[25..100]
+category:Shoes && price:<100
+brand:Aurora || brand:Nimbus
+(brand:Aurora || brand:Nimbus) && price:<100
+```
+
+> Negation (`!=` / "not equal") is **not** supported yet.
+
+## Faceting (`facet_counts`)
+
+Pass `facetBy` with a list of declared `facetFields` to receive `facet_counts`
+in the result. Counts are **query-scoped**: they are computed over the current
+result set *after* full-text matching and `filterBy` have been applied — not
+over the whole collection. Each requested field yields one `FacetCount` entry
+(`{ field_name, counts }`); within it, distinct stored values are counted,
+sorted by **count descending** (ties broken by **value ascending**), and capped
+at `maxFacetValues` (default `10`). Documents whose facet field is missing or
+`null` are skipped. Values are compared as strings.
 
 ## Behavior & semantics
 
@@ -220,8 +304,13 @@ decide whether this release fits your use case:
 
 - **No highlighting.** `highlight` is always `{}`; matched terms are not marked
   up in the returned documents.
-- **No filtering or faceting.** There is no `filter_by`; you cannot constrain
-  results by field value, and `facet_counts` is always `[]`.
+- **No negation in `filter_by`.** Exact, in-set, numeric comparator, and range
+  clauses are supported, but `!=` / "not equal" is not yet.
+- **Faceting is over scalar fields only, and in-memory.** Array-valued fields are
+  not yet expanded into multiple facet values, and there is no write-maintained
+  indexed filters table — filtering and faceting are evaluated in-memory over the
+  current result set. Indexed, write-maintained filters and array facets are a
+  Phase 4 concern.
 - **Correct within bounded scale only.** A single query term that matches more
   than ~16k postings exceeds Convex's per-query read limit (the "hot-term"
   problem). Within that ceiling, `found` and result exactness hold; beyond it
