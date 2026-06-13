@@ -120,3 +120,82 @@ describe("typo-tolerant prefix search", () => {
     expect(typo.hits[0].text_match).toBe(1.5);
   });
 });
+
+describe("filtering + faceting", () => {
+  async function setupFacets() {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.collections.createCollection, {
+      name: "shop",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [
+        { field: "brand", type: "string" },
+        { field: "price", type: "number" },
+      ],
+      facetFields: ["brand"],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "shop",
+      docs: [
+        { id: "1", doc: { name: "running shoe", brand: "Aurora", price: 90 } },
+        { id: "2", doc: { name: "trail shoe", brand: "Aurora", price: 110 } },
+        { id: "3", doc: { name: "rain jacket", brand: "Nimbus", price: 150 } },
+      ],
+    });
+    return t;
+  }
+
+  it("filterBy narrows the result set", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "brand:Aurora" });
+    expect(r.found).toBe(2);
+  });
+
+  it("numeric comparator filter", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "price:>100" });
+    expect(r.found).toBe(2);
+  });
+
+  it("filter combines with a text query (intersection)", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "shoe", filterBy: "brand:Aurora" });
+    expect(r.found).toBe(2);
+  });
+
+  it("facet_counts reflect the filtered+searched set, sorted by count desc", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", facetBy: ["brand"] });
+    expect(r.facet_counts).toEqual([
+      { field_name: "brand", counts: [ { value: "Aurora", count: 2 }, { value: "Nimbus", count: 1 } ] },
+    ]);
+  });
+
+  it("maxFacetValues caps the number of values", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", facetBy: ["brand"], maxFacetValues: 1 });
+    expect(r.facet_counts[0].counts).toEqual([{ value: "Aurora", count: 2 }]);
+  });
+
+  it("facet over a filtered set is query-scoped", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "price:>100", facetBy: ["brand"] });
+    expect(r.facet_counts[0].counts).toEqual([
+      { value: "Aurora", count: 1 },
+      { value: "Nimbus", count: 1 },
+    ]);
+  });
+
+  it("absent facetBy yields empty facet_counts", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "" });
+    expect(r.facet_counts).toEqual([]);
+  });
+
+  it("throws on a facet field not declared", async () => {
+    const t = await setupFacets();
+    await expect(
+      t.query(api.search.search, { collection: "shop", q: "", facetBy: ["price"] }),
+    ).rejects.toThrow(/facet/i);
+  });
+});

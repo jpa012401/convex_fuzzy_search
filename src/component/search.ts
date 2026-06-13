@@ -4,7 +4,8 @@ import { v } from "convex/values";
 import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
 import { candidateTermsForToken } from "./matching";
-import type { SearchResult, Hit } from "./types";
+import { parseFilter } from "./filter";
+import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
 
@@ -40,10 +41,13 @@ export const search = query({
     page: v.optional(v.number()),
     perPage: v.optional(v.number()),
     queryBy: v.optional(v.array(v.string())),
+    filterBy: v.optional(v.string()),
+    facetBy: v.optional(v.array(v.string())),
+    maxFacetValues: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<SearchResult> => {
     const start = Date.now();
-    await requireCollection(ctx, args.collection);
+    const collection = await requireCollection(ctx, args.collection);
 
     const page = Math.max(1, Math.floor(args.page ?? 1));
     const perPage = Math.min(MAX_PER_PAGE, Math.max(1, Math.floor(args.perPage ?? 10)));
@@ -53,6 +57,7 @@ export const search = query({
       .withIndex("by_collection_doc", (q) => q.eq("collection", args.collection))
       .collect();
     const out_of = allDocs.length;
+    const byId = new Map(allDocs.map((d) => [d.docId, d.stored]));
 
     const tokens = tokenize(args.q);
 
@@ -60,7 +65,7 @@ export const search = query({
     let scoreById: Map<string, number> | null = null;
 
     if (tokens.length === 0) {
-      matchedIds = allDocs.map((d) => d.docId).sort();
+      matchedIds = allDocs.map((d) => d.docId);
     } else {
       const perToken: Map<string, number>[] = [];
       for (let i = 0; i < tokens.length; i++) {
@@ -74,7 +79,6 @@ export const search = query({
           await docScoresForToken(ctx, args.collection, candidates, args.queryBy),
         );
       }
-      // AND across tokens: a doc must appear in every token's score map.
       perToken.sort((a, b) => a.size - b.size);
       const [first, ...rest] = perToken;
       scoreById = new Map();
@@ -85,16 +89,56 @@ export const search = query({
           scoreById.set(docId, total);
         }
       }
-      matchedIds = [...scoreById.keys()].sort((a, b) => {
-        const d = scoreById!.get(b)! - scoreById!.get(a)!;
-        return d !== 0 ? d : a < b ? -1 : a > b ? 1 : 0;
-      });
+      matchedIds = [...scoreById.keys()];
+    }
+
+    // Apply structured filter (in-memory over already-loaded stored docs).
+    if (args.filterBy && args.filterBy.trim() !== "") {
+      const fieldTypes: Record<string, "string" | "number"> = {};
+      for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
+      const predicate = parseFilter(args.filterBy, fieldTypes);
+      matchedIds = matchedIds.filter((id) =>
+        predicate((byId.get(id) ?? {}) as Record<string, unknown>),
+      );
     }
 
     const found = matchedIds.length;
-    const pageIds = matchedIds.slice((page - 1) * perPage, (page - 1) * perPage + perPage);
 
-    const byId = new Map(allDocs.map((d) => [d.docId, d.stored]));
+    if (scoreById) {
+      matchedIds.sort((a, b) => {
+        const d = scoreById!.get(b)! - scoreById!.get(a)!;
+        return d !== 0 ? d : a < b ? -1 : a > b ? 1 : 0;
+      });
+    } else {
+      matchedIds.sort();
+    }
+
+    // Faceting over the full (filtered) result set — query-scoped counts.
+    const facet_counts: FacetCount[] = [];
+    if (args.facetBy && args.facetBy.length > 0) {
+      const declared = new Set(collection.facetFields ?? []);
+      const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+      for (const field of args.facetBy) {
+        if (!declared.has(field)) {
+          throw new Error(`Field "${field}" is not a declared facet field`);
+        }
+        const tally = new Map<string, number>();
+        for (const id of matchedIds) {
+          const doc = byId.get(id) as Record<string, unknown> | undefined;
+          const raw = doc?.[field];
+          if (raw === undefined || raw === null) continue;
+          const value = String(raw);
+          tally.set(value, (tally.get(value) ?? 0) + 1);
+        }
+        const counts = [...tally.entries()]
+          .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+          .slice(0, maxValues)
+          .map(([value, count]) => ({ value, count }));
+        facet_counts.push({ field_name: field, counts });
+      }
+    }
+
+    const pageIds = matchedIds.slice((page - 1) * perPage, (page - 1) * perPage + perPage);
     const hits: Hit[] = pageIds.map((id) => ({
       document: (byId.get(id) ?? {}) as Record<string, unknown>,
       highlight: {},
@@ -107,7 +151,7 @@ export const search = query({
       out_of,
       search_time_ms: Date.now() - start,
       hits,
-      facet_counts: [],
+      facet_counts,
     };
   },
 });

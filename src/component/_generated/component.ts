@@ -58,6 +58,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           collection: string;
+          facetBy?: Array<string>;
+          filterBy?: string;
+          maxFacetValues?: number;
           page?: number;
           perPage?: number;
           q: string;
