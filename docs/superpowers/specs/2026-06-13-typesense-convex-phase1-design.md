@@ -183,6 +183,34 @@ The envelope is the final Typesense shape from day one. Later phases fill in
 - No typo tolerance, prefix, faceting, filtering, ranking, or highlighting —
   those are Phases 2–3 by design.
 
+## Sample App — Simple Ecommerce Storefront
+
+Ships in `example/` as both a live demo and a manual test harness. Standard
+component-example stack: **React + Vite + Convex client**, installing this
+component.
+
+**Backend (example Convex app):**
+- Installs the component, creates a `products` collection
+  (`searchFields: ["name", "description", "brand", "category"]`,
+  `storedFields: "all"`).
+- A `seed` mutation populating a few hundred sample products (name, description,
+  brand, category, price, image URL).
+- Thin wrapper query/mutation functions delegating to the component's
+  `search` / `upsert`.
+
+**Frontend (storefront UI):**
+- Search-as-you-type box driving the component's `search`.
+- Product grid rendering `hits` (image, name, brand, price).
+- Visible `found` count ("1,234 results") and pagination controls.
+- **Facet sidebar (category/brand/price) and a sort control are present but
+  disabled / "coming soon"** — placeholders so Phase 2 (faceting/filtering) and
+  Phase 3 (ranking) wire in without a redesign.
+
+**Phase 1 UI scope is deliberately partial:** no working facet filters, no
+relevance sort, no typo tolerance — those light up in later phases. The demo
+proves the Phase 1 contract end-to-end (ingest → exact AND search → Typesense
+envelope → rendered results + count + pagination).
+
 ## Testing Strategy (TDD — tests first, `convex-test` + Vitest)
 
 - **Tokenizer unit tests:** case-folding, Unicode alnum split, punctuation,
@@ -197,3 +225,6 @@ The envelope is the final Typesense shape from day one. Later phases fill in
   (keys present, placeholder values correct).
 - **Multi-collection isolation:** writes/searches in one collection never leak
   into another.
+- **Sample-app smoke check:** seed the `products` collection, run the storefront,
+  confirm search-as-you-type returns expected hits, the `found` count is correct,
+  and pagination works end-to-end.
