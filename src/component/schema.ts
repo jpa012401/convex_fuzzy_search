@@ -24,4 +24,18 @@ export default defineSchema({
   })
     .index("by_collection_term", ["collection", "term"])
     .index("by_collection_doc", ["collection", "docId"]),
+
+  terms: defineTable({
+    collection: v.string(),
+    term: v.string(),
+    docCount: v.number(), // number of docs in the collection containing this term
+  }).index("by_collection_term", ["collection", "term"]),
+
+  trigrams: defineTable({
+    collection: v.string(),
+    gram: v.string(),
+    term: v.string(),
+  })
+    .index("by_collection_gram", ["collection", "gram"]) // fuzzy candidate lookup
+    .index("by_collection_term", ["collection", "term"]), // cleanup when a term is removed
 });

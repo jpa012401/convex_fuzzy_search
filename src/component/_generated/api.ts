@@ -9,6 +9,7 @@
  */
 
 import type * as collections from "../collections.js";
+import type * as fuzzy from "../fuzzy.js";
 import type * as http from "../http.js";
 import type * as search from "../search.js";
 import type * as tokenizer from "../tokenizer.js";
@@ -24,6 +25,7 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   collections: typeof collections;
+  fuzzy: typeof fuzzy;
   http: typeof http;
   search: typeof search;
   tokenizer: typeof tokenizer;
