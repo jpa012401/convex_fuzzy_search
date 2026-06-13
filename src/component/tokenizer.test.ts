@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tokenize } from "../src/component/tokenizer";
+import { tokenize } from "./tokenizer";
 
 describe("tokenize", () => {
   it("lowercases and splits on non-alphanumeric", () => {
