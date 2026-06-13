@@ -120,7 +120,12 @@ export function parseFilter(
       while (peek() && peek().t === ",") { next(); vals.push(getVal()); }
       expect("]");
       if (type === "number") {
-        const nums = vals.map(Number);
+        const nums = vals.map((x) => Number(x));
+        for (let k = 0; k < nums.length; k++) {
+          if (Number.isNaN(nums[k])) {
+            throw new Error(`Invalid number in filter for ${field}: ${vals[k]}`);
+          }
+        }
         return (d) => {
           const v = Number(d[field]);
           return !Number.isNaN(v) && nums.includes(v);
@@ -142,6 +147,7 @@ export function parseFilter(
     const val = getVal();
     if (type === "number") {
       const n = Number(val);
+      if (Number.isNaN(n)) throw new Error(`Invalid number in filter for ${field}: ${val}`);
       return (d) => {
         const v = Number(d[field]);
         return !Number.isNaN(v) && v === n;

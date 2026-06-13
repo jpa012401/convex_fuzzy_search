@@ -64,4 +64,9 @@ describe("parseFilter", () => {
     expect(() => P("brand:")).toThrow();
     expect(() => P("brand:Aurora &&")).toThrow();
   });
+
+  it("throws on a non-numeric literal in exact and in-set numeric filters", () => {
+    expect(() => P("price:abc")).toThrow(/Invalid number/);
+    expect(() => P("price:[1,abc]")).toThrow(/Invalid number/);
+  });
 });
