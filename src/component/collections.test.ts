@@ -40,4 +40,34 @@ describe("collections", () => {
       await t.query(api.collections.getCollection, { name: "nope" }),
     ).toBeNull();
   });
+
+  it("deleteCollection removes the collection, its documents, and postings", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.collections.createCollection, {
+      name: "products",
+      searchFields: ["name"],
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "products",
+      id: "p1",
+      doc: { name: "Red Shoe" },
+    });
+    await t.mutation(api.collections.deleteCollection, { name: "products" });
+
+    expect(
+      await t.query(api.collections.getCollection, { name: "products" }),
+    ).toBeNull();
+    const leftover = await t.run(async (ctx) => ({
+      docs: await ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q) => q.eq("collection", "products"))
+        .collect(),
+      postings: await ctx.db
+        .query("postings")
+        .withIndex("by_collection_doc", (q) => q.eq("collection", "products"))
+        .collect(),
+    }));
+    expect(leftover.docs).toEqual([]);
+    expect(leftover.postings).toEqual([]);
+  });
 });

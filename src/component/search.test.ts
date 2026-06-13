@@ -70,4 +70,18 @@ describe("search", () => {
     expect(r).toMatchObject({ found: 0, hits: [], facet_counts: [] });
     expect(typeof r.search_time_ms).toBe("number");
   });
+
+  it("clamps perPage to at most 250 and page to at least 1", async () => {
+    const t = await setup();
+    const r = await t.query(api.search.search, {
+      collection: "products",
+      q: "",
+      page: 0,
+      perPage: 9999,
+    });
+    expect(r.page).toBe(1);
+    // 3 docs total, so the page still holds all 3, but the clamp must not throw
+    // and must not page beyond bounds.
+    expect(r.hits.length).toBe(3);
+  });
 });

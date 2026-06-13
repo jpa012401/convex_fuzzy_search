@@ -81,4 +81,26 @@ describe("write path", () => {
       t.mutation(api.write.upsert, { collection: "nope", id: "p1", doc: {} }),
     ).rejects.toThrow(/CollectionNotFound/);
   });
+
+  it("stores a doc with no indexable searchFields but makes it unmatchable", async () => {
+    const t = await setup();
+    await t.mutation(api.write.upsert, {
+      collection: "products",
+      id: "p1",
+      // no `name`/`description`; price is a number so it is not tokenized
+      doc: { price: 50 },
+    });
+    // doc is stored (projection keeps `price`)...
+    const stored = await t.run(async (ctx) =>
+      ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q) =>
+          q.eq("collection", "products").eq("docId", "p1"),
+        )
+        .unique(),
+    );
+    expect(stored?.stored).toEqual({ price: 50 });
+    // ...but produces zero postings, so it can never match a text query.
+    expect(await postingsFor(t, "p1")).toEqual([]);
+  });
 });
