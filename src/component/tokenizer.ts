@@ -10,3 +10,21 @@ export function tokenize(text: string): string[] {
     .split(SEPARATORS)
     .filter((t) => t.length > 0);
 }
+
+// Generate de-duplicated contiguous 3-grams of a term, preserving first-seen order.
+// Terms shorter than 3 chars yield the whole term as a single gram. Shared by
+// write-path indexing and query-time fuzzy candidate generation.
+export function trigrams(term: string): string[] {
+  if (typeof term !== "string" || term.length === 0) return [];
+  if (term.length < 3) return [term];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let i = 0; i + 3 <= term.length; i++) {
+    const g = term.slice(i, i + 3);
+    if (!seen.has(g)) {
+      seen.add(g);
+      out.push(g);
+    }
+  }
+  return out;
+}

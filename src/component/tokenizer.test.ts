@@ -20,3 +20,19 @@ describe("tokenize", () => {
     expect(tokenize(null as unknown as string)).toEqual([]);
   });
 });
+
+import { trigrams } from "./tokenizer";
+
+describe("trigrams", () => {
+  it("produces deduped contiguous 3-grams for length >= 3", () => {
+    expect(trigrams("shoe")).toEqual(["sho", "hoe"]);
+    expect(trigrams("aaaa")).toEqual(["aaa"]); // deduped
+  });
+  it("returns the whole term as one gram for length 1-2", () => {
+    expect(trigrams("a")).toEqual(["a"]);
+    expect(trigrams("re")).toEqual(["re"]);
+  });
+  it("returns [] for empty", () => {
+    expect(trigrams("")).toEqual([]);
+  });
+});
