@@ -101,7 +101,7 @@ For query `q` → `tokens = tokenize(q)`. Empty → match-all (unchanged). Other
 - **Levenshtein/budget unit** (if extracted as a pure helper): distances, early cutoff, byLength budget mapping.
 - **Write-path maintenance:** upsert creates `terms` (docCount=1) + trigram rows; second doc sharing a term bumps docCount to 2 without duplicate trigram rows; re-upsert that drops a term decrements/removes; delete removes term+trigrams when docCount hits 0; multi-collection isolation of terms/trigrams.
 - **Search — prefix:** `aur` → matches `aurora*` (last-token prefix); a non-final partial token does NOT prefix-match.
-- **Search — fuzzy:** `fone`→`phone`, `aurara`→`aurora`; budget respected (a 2-edit miss on a 5-char token returns nothing); short token (`re`) does not fuzzy-explode.
+- **Search — fuzzy:** `runing`→`running`, `aurara`→`aurora` (both edit-distance 1); budget respected (a 2-edit miss on a 5-char token returns nothing); short token (`re`) does not fuzzy-explode. (Note: `fone`→`phone` is edit-distance 2, so it does NOT match at a length-4 token's budget of 1 — a useful reminder that the typo budget is real.)
 - **Search — ranking:** exact outranks prefix outranks typo; `text_match` is populated and ordering is deterministic.
 - **Search — AND across mixed match types:** `red shoo` (typo) still ANDs.
 - **Example app:** search-as-you-type now returns results for partial words; verify `aur`→2, `aurra`→ Aurora hits.

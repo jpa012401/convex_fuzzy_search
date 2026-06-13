@@ -559,11 +559,12 @@ describe("candidateTermsForToken", () => {
 
   it("fuzzy matches a typo within budget and scores below exact", async () => {
     const t = await setup();
+    // "runing" is edit-distance 1 from "running" (token len 6 -> budget 1).
     const m = await t.run(async (ctx: any) =>
-      Object.fromEntries(await candidateTermsForToken(ctx, "products", "fone", false)),
+      Object.fromEntries(await candidateTermsForToken(ctx, "products", "runing", false)),
     );
-    expect(m["phone"]).toBeGreaterThan(0);
-    expect(m["phone"]).toBeLessThan(EXACT);
+    expect(m["running"]).toBeGreaterThan(0);
+    expect(m["running"]).toBeLessThan(EXACT);
   });
 });
 ```
