@@ -22,34 +22,4 @@ import type { FunctionReference } from "convex/server";
  * ```
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
-  {
-    lib: {
-      add: FunctionReference<
-        "mutation",
-        "internal",
-        { targetId: string; text: string; userId: string },
-        string,
-        Name
-      >;
-      list: FunctionReference<
-        "query",
-        "internal",
-        { limit?: number; targetId: string },
-        Array<{
-          _creationTime: number;
-          _id: string;
-          targetId: string;
-          text: string;
-          userId: string;
-        }>,
-        Name
-      >;
-      translate: FunctionReference<
-        "action",
-        "internal",
-        { baseUrl: string; commentId: string },
-        string,
-        Name
-      >;
-    };
-  };
+  {};
