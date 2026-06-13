@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as collections from "../collections.js";
 import type * as http from "../http.js";
 import type * as tokenizer from "../tokenizer.js";
 import type * as types from "../types.js";
@@ -20,6 +21,7 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
+  collections: typeof collections;
   http: typeof http;
   tokenizer: typeof tokenizer;
   types: typeof types;
