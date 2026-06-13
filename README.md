@@ -8,10 +8,10 @@ your Convex deployment. No external search service to run, no sync pipeline to
 maintain: writes are durable Convex mutations and become searchable
 immediately.
 
-> **Status: Phase 1.** This release delivers exact-match tokenized search with
-> Typesense-shaped output. Typo tolerance, filtering/faceting, weighted ranking,
-> highlighting, and large-scale hardening are planned for later phases — see
-> [Roadmap & limitations](#phase-1-limitations) and the
+> **Status.** This release delivers tokenized search with prefix matching,
+> typo tolerance, and relevance ranking, all with Typesense-shaped output.
+> Filtering/faceting, highlighting, and large-scale hardening are planned for
+> later phases — see [Roadmap & limitations](#roadmap--limitations) and the
 > [design specs](#design-specs). Document and result shapes are designed to be
 > forward-compatible with those phases.
 
@@ -20,8 +20,14 @@ Found a bug? Feature request?
 
 ## Features
 
-- **Exact tokenized full-text search** — lowercase + Unicode alphanumeric
+- **Tokenized full-text search** — lowercase + Unicode alphanumeric
   tokenization, multi-word queries combined with AND semantics.
+- **Prefix matching (search-as-you-type)** — the final query token matches any
+  indexed term it is a prefix of, so results update as the user types.
+- **Typo tolerance** — misspelled tokens still match via a trigram index plus a
+  bounded Levenshtein distance check, with a per-token-length typo budget.
+- **Relevance ranking** — hits are scored by a `text_match` value (exact beats
+  prefix beats typo) and returned best-first.
 - **Typesense-shaped output** — `{ found, page, out_of, search_time_ms, hits,
   facet_counts }` so you can map an existing Typesense UI onto Convex.
 - **Synchronous writes** — documents are searchable the moment the upsert
@@ -113,11 +119,11 @@ runnable example.
   "hits": [
     {
       "document": { /* stored projection of the matched doc */ },
-      "highlight": {},    // always {} in Phase 1
-      "text_match": 0     // always 0 in Phase 1
+      "highlight": {},    // always {} (highlighting not implemented yet)
+      "text_match": 5     // relevance score; higher is better (0 in browse mode)
     }
   ],
-  "facet_counts": []      // always [] in Phase 1
+  "facet_counts": []      // always [] (faceting not implemented yet)
 }
 ```
 
@@ -181,12 +187,25 @@ Call from a query.
 - **Multi-word queries are AND** — every query token must be present for a
   document to match (`"red shoe"` matches only documents containing both `red`
   and `shoe`).
-- **Exact tokens only** — a query token must equal an indexed token. No prefix,
-  fuzzy, or typo matching.
+- **Prefix matching on the last token** — the final token of a query also
+  matches any indexed term it is a prefix of (so a partial word the user is
+  still typing matches longer terms). Earlier tokens must match in full (exact
+  or typo). A prefix match scores below an exact match.
+- **Typo tolerance** — a token can match an indexed term within a bounded
+  Levenshtein edit distance. Candidate terms are gathered from a trigram index
+  and then distance-checked. The allowed typo budget scales with token length:
+  tokens of length ≤ 3 tolerate **0** typos (must match exactly), 4–7 tolerate
+  **1**, and ≥ 8 tolerate **2**. A typo match scores below exact and prefix, and
+  lower the farther the edit distance.
+- **Relevance ranking** — each hit carries a `text_match` score. Per token, an
+  exact match scores `3`, a prefix match `2`, and a typo match `2 − 0.5 × distance`
+  (so distance-1 → `1.5`, distance-2 → `1.0`); a document's `text_match` is the
+  sum of its best per-token scores. Results are sorted by `text_match`
+  descending, with ties broken by document `id` ascending.
 - **`queryBy`** — when provided, a document only matches a token if that token
   appears in one of the listed fields.
 - **Empty query = match-all** — useful for "browse all" / initial listings,
-  returned paginated and sorted by document `id`.
+  returned paginated and sorted by document `id` (with `text_match` `0`).
 - **`storedFields` is the projection** — `hits[].document` contains exactly the
   fields configured by `storedFields` (`"all"` or the explicit list).
 - **Synchronous writes** — once an `upsert`/`upsertMany`/`delete` mutation
@@ -194,22 +213,19 @@ Call from a query.
 - **Replace-by-id** — upsert identity is the consumer-provided string `id`;
   re-upserting an `id` fully replaces the previous document.
 
-## Phase 1 limitations
+## Roadmap & limitations
 
-This phase is intentionally scoped. The following are **not** implemented yet
-and are documented honestly so you can decide whether Phase 1 fits your use case:
+The following are **not** implemented yet and are documented honestly so you can
+decide whether this release fits your use case:
 
-- **No typo tolerance / fuzzy / prefix matching.** Tokens match exactly.
-- **No filtering.** There is no `filter_by`; you cannot constrain results by
-  field value (planned for Phase 2).
-- **`facet_counts` is always `[]`.** Faceting arrives in Phase 2.
-- **`highlight` is always `{}`** and **`text_match` is always `0`.** Highlighting
-  and relevance scoring/weighted ranking arrive in Phase 3. Results are currently
-  ordered by document `id`, not by relevance.
+- **No highlighting.** `highlight` is always `{}`; matched terms are not marked
+  up in the returned documents.
+- **No filtering or faceting.** There is no `filter_by`; you cannot constrain
+  results by field value, and `facet_counts` is always `[]`.
 - **Correct within bounded scale only.** A single query term that matches more
-  than ~16k postings exceeds Convex's per-query read limit (the Phase 4
-  "hot-term" problem). Within that ceiling, `found` and result exactness hold;
-  beyond it the query will fail. Large-scale hardening is Phase 4.
+  than ~16k postings exceeds Convex's per-query read limit (the "hot-term"
+  problem). Within that ceiling, `found` and result exactness hold; beyond it
+  the query will fail. Large-scale hardening is a later phase.
 
 ## Running the example app
 
@@ -231,7 +247,8 @@ npm run dev:frontend
 ```
 
 Open the app, click **Seed data** to create the `products` collection and load
-sample documents, then try searching (e.g. `aurora shoe`, `wool`, `bottle`).
+sample documents, then try searching (e.g. `aurora shoe`, `aur` for a prefix
+match, or `aurra` to see typo tolerance in action).
 
 ## Design specs
 
