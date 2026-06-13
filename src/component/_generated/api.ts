@@ -10,6 +10,7 @@
 
 import type * as collections from "../collections.js";
 import type * as http from "../http.js";
+import type * as search from "../search.js";
 import type * as tokenizer from "../tokenizer.js";
 import type * as types from "../types.js";
 import type * as write from "../write.js";
@@ -24,6 +25,7 @@ import { anyApi, componentsGeneric } from "convex/server";
 const fullApi: ApiFromModules<{
   collections: typeof collections;
   http: typeof http;
+  search: typeof search;
   tokenizer: typeof tokenizer;
   types: typeof types;
   write: typeof write;

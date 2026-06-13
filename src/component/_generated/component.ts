@@ -50,6 +50,21 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
     };
+    search: {
+      search: FunctionReference<
+        "query",
+        "internal",
+        {
+          collection: string;
+          page?: number;
+          perPage?: number;
+          q: string;
+          queryBy?: Array<string>;
+        },
+        any,
+        Name
+      >;
+    };
     write: {
       delete: FunctionReference<
         "mutation",
