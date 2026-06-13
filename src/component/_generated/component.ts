@@ -50,4 +50,34 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
     };
+    write: {
+      delete: FunctionReference<
+        "mutation",
+        "internal",
+        { collection: string; id: string },
+        any,
+        Name
+      >;
+      deleteDoc: FunctionReference<
+        "mutation",
+        "internal",
+        { collection: string; id: string },
+        any,
+        Name
+      >;
+      upsert: FunctionReference<
+        "mutation",
+        "internal",
+        { collection: string; doc: any; id: string },
+        any,
+        Name
+      >;
+      upsertMany: FunctionReference<
+        "mutation",
+        "internal",
+        { collection: string; docs: Array<{ doc: any; id: string }> },
+        any,
+        Name
+      >;
+    };
   };
