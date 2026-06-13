@@ -19,13 +19,18 @@ export const seed = mutation({
   args: {},
   handler: async (ctx) => {
     const existing = await search.getCollection(ctx, COLLECTION);
-    if (!existing) {
-      await search.createCollection(ctx, {
-        name: COLLECTION,
-        searchFields: ["name", "description", "brand", "category"],
-        storedFields: "all",
-      });
-    }
+    if (existing) await search.deleteCollection(ctx, COLLECTION);
+    await search.createCollection(ctx, {
+      name: COLLECTION,
+      searchFields: ["name", "description", "brand", "category"],
+      storedFields: "all",
+      filterFields: [
+        { field: "brand", type: "string" },
+        { field: "category", type: "string" },
+        { field: "price", type: "number" },
+      ],
+      facetFields: ["brand", "category"],
+    });
     await search.upsertMany(ctx, {
       collection: COLLECTION,
       docs: SAMPLE.map(({ id, ...rest }) => ({ id, doc: { id, ...rest } })),
@@ -39,6 +44,8 @@ export const searchProducts = query({
     q: v.string(),
     page: v.optional(v.number()),
     perPage: v.optional(v.number()),
+    filterBy: v.optional(v.string()),
+    facetBy: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) =>
     search.search(ctx, { collection: COLLECTION, ...args }),
