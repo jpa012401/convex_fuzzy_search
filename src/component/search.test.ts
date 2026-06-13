@@ -104,6 +104,12 @@ describe("typo-tolerant prefix search", () => {
     expect((await t.query(api.search.search, { collection: "products", q: "runing" })).found).toBe(2);
   });
 
+  it("rejects a typo that exceeds the budget", async () => {
+    const t = await setup();
+    // "runnixx" is edit-distance 2 from "running" (token len 7 -> budget 1) => no match.
+    expect((await t.query(api.search.search, { collection: "products", q: "runnixx" })).found).toBe(0);
+  });
+
   it("ranks exact above prefix above typo via text_match", async () => {
     const t = await setup();
     const exact = await t.query(api.search.search, { collection: "products", q: "running" });

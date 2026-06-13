@@ -227,6 +227,15 @@ decide whether this release fits your use case:
   problem). Within that ceiling, `found` and result exactness hold; beyond it
   the query will fail. Large-scale hardening is a later phase.
 
+### Migration: re-index after upgrading
+
+Matching (including **exact** full-word matching) now depends on the `terms`
+table, which is only populated on write. If you indexed documents under an
+earlier version that did not maintain `terms`/`trigrams`, those documents will
+return **zero results for every query — even exact ones — until you re-upsert
+them**. After upgrading, re-run `upsert` (or your seed routine) for existing
+documents so their `terms`/`trigrams` rows are built.
+
 ## Running the example app
 
 The repository includes [`example/`](./example), an ecommerce storefront demo
