@@ -7,10 +7,7 @@ import type {
 import type { ComponentApi } from "../component/_generated/component.js";
 import type { SearchResult } from "../component/types.js";
 
-// See the example/convex/example.ts file for how to use this component.
-//
-// The scaffold's `comments` demo client (translate/exposeApi/list, which
-// called component.lib.*) was removed along with the component's lib.ts.
+// See example/convex/products.ts for how to use this component.
 // The reusable ctx-type helpers below are used by the TypesenseSearch client.
 
 export type { ComponentApi };
