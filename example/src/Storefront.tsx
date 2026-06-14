@@ -41,6 +41,11 @@ export function Storefront() {
   // unfiltered browse stays on the lean (counter-paged) path instead of the
   // full-collection load that a live weighted blend requires.
   const [rankEnabled, setRankEnabled] = useState(false);
+  // Lean rank PROFILE ("boosted"): re-ranks a bounded top-N window off the
+  // popularity base order, boosting popularity + affinity + the preferred
+  // categories passed as query-time context. No full-collection load.
+  const [boostEnabled, setBoostEnabled] = useState(false);
+  const [prefCats, setPrefCats] = useState<string[]>([]);
   const seed = useMutation(api.products.seed);
   const startSeed = useMutation(api.products.startSeed);
   const profile = useQuery(api.products.getProfile);
@@ -63,10 +68,15 @@ export function Storefront() {
   };
 
   const filterBy = buildFilterBy(selected);
-  // Only send rankBy when the switch is on AND there is no explicit sortBy —
-  // otherwise omit it so the query can take a lean (indexed) retrieval path.
+  // The lean rank profile ("boosted") wins when enabled: re-ranks a top-N window
+  // off the popularity sort index, boosting the preferred categories via context.
+  const rank = boostEnabled
+    ? { profile: "boosted" as const, context: { sets: { prefCats } } }
+    : undefined;
+  // Only send rankBy when its switch is on, the profile is OFF, and there is no
+  // explicit sortBy — otherwise omit it so the query stays on a lean path.
   const rankBy =
-    rankEnabled && !SORTS[sort]
+    !boostEnabled && rankEnabled && !SORTS[sort]
       ? {
           text: textWeight,
           fields: [
@@ -84,6 +94,7 @@ export function Storefront() {
     facetBy: ["brand", "category"],
     sortBy: SORTS[sort],
     rankBy,
+    rank,
   });
 
   const totalPages = result ? Math.max(1, Math.ceil(result.found / PER_PAGE)) : 1;
@@ -121,6 +132,17 @@ export function Storefront() {
             />
             Weighted ranking
           </label>
+          <label
+            title="Lean rank profile: re-ranks a top-N window off the popularity sort index, boosting your preferred categories. No full-collection load. Overrides weighted ranking."
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}
+          >
+            <input
+              type="checkbox"
+              checked={boostEnabled}
+              onChange={(e) => { setBoostEnabled(e.target.checked); setPage(1); }}
+            />
+            Lean boost profile
+          </label>
         </div>
         {loadMsg && <p style={{ fontSize: 13, color: "#888" }}>{loadMsg}</p>}
 
@@ -146,9 +168,17 @@ export function Storefront() {
           active={rankEnabled && sort === "relevance"}
         />
 
+        <LeanBoostPanel
+          active={boostEnabled}
+          prefCats={prefCats}
+          onToggle={(c) => { setPrefCats((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c])); setPage(1); }}
+        />
+
         <p>
           {result
-            ? `${result.found_approximate ? "≈" : ""}${result.found} results · ${result.search_time_ms} ms`
+            ? `${result.found_approximate ? "≈" : ""}${result.found} results · ${result.search_time_ms} ms${
+                boostEnabled ? (result.reranked ? " · lean re-rank (window)" : " · base-order tail") : ""
+              }`
             : "Loading…"}
         </p>
         <ProductGrid hits={result?.hits ?? []} showScore={sort === "relevance"} />
@@ -157,6 +187,56 @@ export function Storefront() {
           <span>Page {page} / {totalPages}</span>
           <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Lean rank-profile control: pick preferred categories that the "boosted"
+// profile floats up, re-ranking a top-N window off the popularity sort index
+// (no full-collection load). Overrides the weighted-ranking panel when on.
+function LeanBoostPanel({
+  active,
+  prefCats,
+  onToggle,
+}: {
+  active: boolean;
+  prefCats: string[];
+  onToggle: (c: string) => void;
+}) {
+  return (
+    <div
+      style={{
+        margin: "12px 0",
+        padding: 12,
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        background: "#fafafa",
+        color: "#222",
+        maxWidth: 560,
+        opacity: active ? 1 : 0.5,
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>
+        Lean boost profile (rank: <code>boosted</code>)
+      </div>
+      <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>
+        Re-ranks a top-N <strong>window</strong> off the popularity index: boosts
+        popularity + affinity + the preferred categories below (sent as query
+        <code> context.sets.prefCats</code>). No full-collection scan.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px" }}>
+        {CATEGORY_OPTIONS.map((c) => (
+          <label key={c} style={{ fontSize: 13, display: "flex", gap: 4, alignItems: "center" }}>
+            <input type="checkbox" checked={prefCats.includes(c)} onChange={() => onToggle(c)} />
+            {c}
+          </label>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>
+        {active
+          ? "On — toggle “Lean boost profile” in the toolbar to switch off."
+          : "Off — enable “Lean boost profile” in the toolbar. Needs the Load 5k dataset and a collection created with the profile."}
       </div>
     </div>
   );
