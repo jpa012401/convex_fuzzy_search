@@ -97,6 +97,8 @@ export class TypesenseSearch {
       filterBy?: string;
       facetBy?: string[];
       maxFacetValues?: number;
+      rankBy?: { text?: number; fields?: { field: string; weight: number }[] };
+      sortBy?: { field: string; order: "asc" | "desc" }[];
     },
   ): Promise<SearchResult> {
     return ctx.runQuery(this.component.search.search, args);
