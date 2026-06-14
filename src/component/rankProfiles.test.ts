@@ -74,4 +74,14 @@ describe("rankProfiles validation at createCollection", () => {
       }),
     ).rejects.toThrow(/duplicate/i);
   });
+
+  it("rejects recencyDecay halfLifeMs <= 0", async () => {
+    const c = t();
+    await expect(
+      c.mutation(api.collections.createCollection, {
+        ...base,
+        rankProfiles: { p: { base: "postedAt:desc", terms: [{ id: "r", type: "recencyDecay", weight: 1, field: "postedAt", halfLifeMs: 0 }] } },
+      }),
+    ).rejects.toThrow(/halfLifeMs/);
+  });
 });

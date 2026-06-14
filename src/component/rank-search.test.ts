@@ -86,4 +86,54 @@ describe("rank profiles re-rank a browse window", () => {
     const r = await c.query(api.search.search, { collection: "jobs", q: "" });
     expect(r.reranked).toBe(true);
   });
+
+  it("browse-rank pagination has no gap when window is not a multiple of perPage", async () => {
+    const c = convexTest(schema, modules);
+    registerAggregate(c, "docCount");
+    registerAggregate(c, "sortIndex");
+    await c.mutation(api.collections.createCollection, {
+      name: "shop", searchFields: ["name"], storedFields: "all",
+      sortSpecs: [[{ field: "rank", order: "asc" as const }]],
+      rankProfiles: { p: { base: "rank:asc", window: 10, terms: [{ id: "r", type: "field", weight: 1, field: "boost" }] } },
+    });
+    for (let i = 0; i < 20; i++) {
+      await c.mutation(api.write.upsert, { collection: "shop", id: `d${i}`, doc: { id: `d${i}`, name: `n${i}`, rank: i, boost: 0 } });
+    }
+    const seen = new Set<string>();
+    for (let page = 1; page <= 7; page++) {
+      const r = await c.query(api.search.search, { collection: "shop", q: "", perPage: 3, page, rank: { profile: "p" } });
+      for (const h of r.hits) seen.add(h.document.id);
+    }
+    expect(seen.size).toBe(20); // every doc appears across pages 1..7 (20/3 -> 7 pages), no gap
+  });
+
+  it("rank+filter facet counts cover the full matched set, not just the window", async () => {
+    const c = convexTest(schema, modules);
+    registerAggregate(c, "docCount");
+    registerAggregate(c, "sortIndex");
+    await c.mutation(api.collections.createCollection, {
+      name: "shop", searchFields: ["name"], storedFields: "all",
+      filterFields: [{ field: "inStock", type: "string" }],
+      facetFields: ["cat"],
+      sortSpecs: [[{ field: "rank", order: "asc" as const }]],
+      rankProfiles: { p: { base: "rank:asc", window: 5, terms: [{ id: "r", type: "field", weight: 1, field: "boost" }] } },
+    });
+    for (let i = 0; i < 12; i++) {
+      await c.mutation(api.write.upsert, { collection: "shop", id: `d${i}`, doc: { id: `d${i}`, name: `n${i}`, inStock: "true", cat: i < 7 ? "A" : "B", rank: i, boost: 0 } });
+    }
+    const r = await c.query(api.search.search, {
+      collection: "shop", q: "", filterBy: "inStock:true", facetBy: ["cat"], rank: { profile: "p" },
+    });
+    expect(r.found).toBe(12);
+    const cat = r.facet_counts.find((f: any) => f.field_name === "cat");
+    const total = cat.counts.reduce((s: number, x: any) => s + x.count, 0);
+    expect(total).toBe(12); // full matched set, not the window of 5
+  });
+
+  it("unknown weight-override id throws", async () => {
+    const { c } = await seeded();
+    await expect(
+      c.query(api.search.search, { collection: "jobs", q: "", rank: { profile: "feed", weights: { nope: 1 } } }),
+    ).rejects.toThrow(/Unknown rank weight override/i);
+  });
 });

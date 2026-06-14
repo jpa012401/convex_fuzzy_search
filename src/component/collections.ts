@@ -91,6 +91,12 @@ export const createCollection = mutation({
         for (const term of profile.terms) {
           if (seen.has(term.id)) throw new Error(`rankProfile "${name}" has duplicate term id "${term.id}"`);
           seen.add(term.id);
+          if (term.type === "recencyDecay" && !(term.halfLifeMs > 0)) {
+            throw new Error(`rankProfile "${name}" term "${term.id}" halfLifeMs must be > 0`);
+          }
+          if (term.type === "geoDistance" && !(term.maxKm > 0)) {
+            throw new Error(`rankProfile "${name}" term "${term.id}" maxKm must be > 0`);
+          }
           const fields =
             term.type === "geoDistance" ? [term.latField, term.lngField]
             : term.type === "relevance" ? []

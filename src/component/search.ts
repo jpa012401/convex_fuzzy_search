@@ -90,6 +90,14 @@ export const search = query({
     if (args.rank && !rankProfile) {
       throw new Error(`Unknown rank profile "${args.rank.profile}"`);
     }
+    if (args.rank?.weights && rankProfile) {
+      const termIds = new Set(rankProfile.terms.map((t) => t.id));
+      for (const id of Object.keys(args.rank.weights)) {
+        if (!termIds.has(id)) {
+          throw new Error(`Unknown rank weight override "${id}" for profile "${args.rank.profile}"`);
+        }
+      }
+    }
     const hasRank = !!rankProfile;
     const hasCustomOrder = hasSortBy || hasRankBy || hasRank;
 
@@ -233,6 +241,7 @@ export const search = query({
       found = out_of;
     }
 
+    const facetIds = matchedIds; // full matched/candidate set, before any rank windowing
     const rawScore = (id: string) => (scoreById ? (scoreById.get(id) ?? 0) : 0);
     if (hasRank) {
       const windowSize = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile!.window ?? DEFAULT_RERANK_WINDOW)));
@@ -270,7 +279,7 @@ export const search = query({
           continue;
         }
         const tally = new Map<string, number>();
-        for (const id of matchedIds) {
+        for (const id of facetIds) {
           const raw = storedOf(id)[field];
           if (raw === undefined || raw === null) continue;
           const value = String(raw);
@@ -285,14 +294,25 @@ export const search = query({
     }
 
     const pageStart = (page - 1) * perPage;
-    const rerankWindow = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile?.window ?? DEFAULT_RERANK_WINDOW)));
     let pageIds: string[];
-    if (hasRank && tokens.length === 0 && !filterIds && pageStart >= rerankWindow) {
-      // Beyond the re-ranked window: serve the plain base order (head-only re-rank).
-      pageIds = await pageSortedDocIds(ctx, args.collection, rankProfile!.base, pageStart, perPage);
-      const tailById = await loadDocs(ctx, args.collection, pageIds);
-      for (const [k, val] of tailById) byId.set(k, val);
-      reranked = false;
+    if (hasRank && tokens.length === 0 && !filterIds) {
+      const windowPart = matchedIds.slice(pageStart, pageStart + perPage);
+      if (pageStart + perPage > matchedIds.length) {
+        // page extends past the re-ranked window -> fill from plain base order
+        const tailStart = Math.max(pageStart, matchedIds.length);
+        const need = perPage - windowPart.length;
+        const tail = need > 0
+          ? await pageSortedDocIds(ctx, args.collection, rankProfile!.base, tailStart, need)
+          : [];
+        if (tail.length > 0) {
+          const tailById = await loadDocs(ctx, args.collection, tail);
+          for (const [k, val] of tailById) byId.set(k, val);
+          reranked = false;
+        }
+        pageIds = [...windowPart, ...tail];
+      } else {
+        pageIds = windowPart;
+      }
     } else {
       pageIds = matchedIds.slice(pageStart, pageStart + perPage);
     }
