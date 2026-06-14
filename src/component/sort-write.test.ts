@@ -81,4 +81,30 @@ describe("write path maintains sort index", () => {
     await runBackfill(); // insertIfDoesNotExist -> idempotent
     expect(await pageAsc(t)).toEqual(["z2", "z1"]);
   });
+
+  // Regression: a string-join namespace ("collection specId") would alias
+  // ("x a","b:asc") with ("x","a b:asc"); the tuple namespace keeps them apart.
+  it("does not alias namespaces when names contain spaces", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    registerAggregate(t, "sortIndex");
+    await t.mutation(api.collections.createCollection, {
+      name: "x a",
+      searchFields: ["name"],
+      storedFields: "all",
+      sortSpecs: [[{ field: "b", order: "asc" as const }]],
+    });
+    await t.mutation(api.collections.createCollection, {
+      name: "x",
+      searchFields: ["name"],
+      storedFields: "all",
+      sortSpecs: [[{ field: "a b", order: "asc" as const }]],
+    });
+    await t.mutation(api.write.upsert, { collection: "x a", id: "p", doc: { name: "p", b: 1 } });
+    await t.mutation(api.write.upsert, { collection: "x", id: "q", doc: { name: "q", "a b": 2 } });
+    const page = (col: string, specId: string) =>
+      t.run((ctx: any) => pageSortedDocIds(ctx, col, specId, 0, 10));
+    expect(await page("x a", "b:asc")).toEqual(["p"]);
+    expect(await page("x", "a b:asc")).toEqual(["q"]);
+  });
 });

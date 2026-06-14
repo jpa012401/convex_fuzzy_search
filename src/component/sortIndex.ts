@@ -8,7 +8,7 @@ import { numField } from "./ranking";
 // (collection, declared spec); composite numeric key; docId as the unique id
 // so ties break by docId — matching the in-memory comparator's tie-break.
 const sortAgg = new DirectAggregate<{
-  Namespace: string;
+  Namespace: [string, string];
   Key: number[];
   Id: string;
 }>(components.sortIndex);
@@ -42,8 +42,11 @@ export function specMatches(
   return null;
 }
 
-function ns(collection: string, specId: string): string {
-  return `${collection} ${specId}`;
+// Structured tuple namespace [collection, specId] — the aggregate orders array
+// namespaces element-wise, so two distinct (collection, spec) pairs can never
+// alias (a string-join separator could, since names may contain any character).
+function ns(collection: string, specId: string): [string, string] {
+  return [collection, specId];
 }
 
 export async function addSortEntry(

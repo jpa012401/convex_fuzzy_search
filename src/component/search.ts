@@ -126,6 +126,9 @@ export const search = query({
 
     // ---- LEAN BROWSE + SORT: empty q, no filter, no rankBy, and sortBy matches
     // a declared spec -> page off the sort-index aggregate (no full-collection load).
+    // found is out_of (every doc is indexed per spec); before the sort-index
+    // backfill runs for a pre-S4 collection it may exceed the indexed entries,
+    // so the final page can be short until backfill completes.
     if (tokens.length === 0 && !hasFilter && hasSortBy && !hasRankBy) {
       const spec = specMatches(args.sortBy, collection.sortSpecs ?? []);
       if (spec) {
