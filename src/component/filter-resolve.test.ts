@@ -40,4 +40,18 @@ describe("resolveAstToDocIds", () => {
     expect(sorted(await resolve(t, "brand:Aurora && price:>100"))).toEqual(["b"]);
     expect(sorted(await resolve(t, "brand:Nimbus || price:<100"))).toEqual(["a", "c"]);
   });
+
+  it("comparators exclude rows with no numeric value (undefined numVal)", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await seedFilters(t); // a:90, b:110, c:150 (all numeric)
+    // Insert a row under the numeric field 'price' with NO numVal (strVal only),
+    // simulating a non-coercible/missing value that must NOT match a comparator.
+    await t.run(async (ctx: any) => {
+      await ctx.db.insert("filters", { collection: "shop", field: "price", docId: "x", strVal: "n/a" });
+    });
+    // "x" has undefined numVal -> must be excluded from < and <=.
+    expect(sorted(await resolve(t, "price:<100"))).toEqual(["a"]);
+    expect(sorted(await resolve(t, "price:<=90"))).toEqual(["a"]);
+  });
 });

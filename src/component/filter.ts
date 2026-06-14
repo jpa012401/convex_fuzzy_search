@@ -198,6 +198,7 @@ async function strIds(ctx: QueryCtx, collection: string, field: string, value: s
     .collect();
   return rows.map((r) => r.docId);
 }
+// Numeric filter fields are written with `numVal = Number(value)` only when coercible; rows lacking `numVal` must never match numeric comparisons.
 async function numEqIds(ctx: QueryCtx, collection: string, field: string, num: number): Promise<string[]> {
   const rows = await ctx.db
     .query("filters")
@@ -216,14 +217,14 @@ async function numCmpIds(ctx: QueryCtx, collection: string, field: string, op: s
         : b.lte("numVal", num);
     })
     .collect();
-  return rows.map((r) => r.docId);
+  return rows.filter((r) => r.numVal !== undefined).map((r) => r.docId);
 }
 async function numRangeIds(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number): Promise<string[]> {
   const rows = await ctx.db
     .query("filters")
     .withIndex("by_num", (q) => q.eq("collection", collection).eq("field", field).gte("numVal", lo).lte("numVal", hi))
     .collect();
-  return rows.map((r) => r.docId);
+  return rows.filter((r) => r.numVal !== undefined).map((r) => r.docId);
 }
 
 export async function resolveAstToDocIds(
