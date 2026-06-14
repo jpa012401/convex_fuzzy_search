@@ -18,7 +18,10 @@ export function ProductGrid({ hits, showScore }: { hits: Hit[]; showScore?: bool
               __html: h.highlight?.name?.snippet ?? h.document.name,
             }}
           />
-          <div style={{ color: "#666", fontSize: 13 }}>{h.document.brand}</div>
+          <div style={{ color: "#666", fontSize: 13 }}>
+            {h.document.brand}
+            {h.document.category ? ` · ${h.document.category}` : ""}
+          </div>
           <div>${h.document.price}</div>
           {showScore && (
             <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
