@@ -9,9 +9,10 @@ maintain: writes are durable Convex mutations and become searchable
 immediately.
 
 > **Status.** This release delivers tokenized search with prefix matching,
-> typo tolerance, relevance ranking, and structured filtering + faceting, all
-> with Typesense-shaped output. Highlighting and large-scale hardening are
-> planned for later phases — see [Roadmap & limitations](#roadmap--limitations)
+> typo tolerance, relevance ranking, highlighting, weighted ranking +
+> multi-key sort, and structured filtering + faceting, all with
+> Typesense-shaped output. Large-scale hardening is
+> planned for a later phase — see [Roadmap & limitations](#roadmap--limitations)
 > and the [design specs](#design-specs). Document and result shapes are designed
 > to be forward-compatible with those phases.
 
@@ -28,6 +29,16 @@ Found a bug? Feature request?
   bounded Levenshtein distance check, with a per-token-length typo budget.
 - **Relevance ranking** — hits are scored by a `text_match` value (exact beats
   prefix beats typo) and returned best-first.
+- **Highlighting** — automatic, no extra argument: each searched field that
+  matched returns `highlight[field] = { snippet, matched_tokens }`, where
+  `snippet` is the field text with matched words wrapped in `<mark>…</mark>`
+  (other text HTML-escaped, so it is safe to render) and `matched_tokens` lists
+  the matched surface forms.
+- **Weighted ranking (`rankBy`)** — blend the relevance score with weighted
+  numeric fields (Elasticsearch `field_value_factor` style) to boost by
+  popularity, price, etc.
+- **Multi-key sort (`sortBy`)** — order results by a list of sort keys over
+  `_text_match` or numeric stored fields, ascending or descending.
 - **Structured filtering** — constrain results with a Typesense-style
   `filter_by` expression: exact matches, in-set membership, numeric comparators
   and ranges, combined with `&&`/`||` and parentheses.
@@ -124,8 +135,13 @@ runnable example.
   "hits": [
     {
       "document": { /* stored projection of the matched doc */ },
-      "highlight": {},    // always {} (highlighting not implemented yet)
-      "text_match": 5     // relevance score; higher is better (0 in browse mode)
+      "highlight": {      // one entry per searched field that matched; {} in browse mode
+        "name": {
+          "snippet": "Red <mark>Shoe</mark>",   // matched words wrapped, rest HTML-escaped
+          "matched_tokens": ["Shoe"]            // matched surface forms (deduped)
+        }
+      },
+      "text_match": 5     // RAW relevance score; higher is better (0 in browse mode)
     }
   ],
   "facet_counts": [       // one entry per requested facetBy field; [] if none requested
@@ -192,7 +208,7 @@ mutation.
 Removes the document with the given `id` from the collection. Call from a
 mutation.
 
-### `search(ctx, { collection, q, page?, perPage?, queryBy?, filterBy?, facetBy?, maxFacetValues? })`
+### `search(ctx, { collection, q, page?, perPage?, queryBy?, filterBy?, facetBy?, maxFacetValues?, rankBy?, sortBy? })`
 
 Runs a search and returns a [`SearchResult`](#search-output-shape).
 
@@ -210,8 +226,92 @@ Runs a search and returns a [`SearchResult`](#search-output-shape).
   Each must be a declared `facetFields` field, otherwise the query throws.
 - `maxFacetValues` — optional cap on how many distinct values are returned per
   facet field. Defaults to `10`.
+- `rankBy` — optional weighted-ranking config that changes result **ordering**
+  (see [Weighted ranking](#weighted-ranking-rankby)). Does not change the
+  reported `text_match`.
+- `sortBy` — optional list of sort keys that changes result **ordering** (see
+  [Multi-key sort](#multi-key-sort-sortby)). Does not change the reported
+  `text_match`.
 
-Call from a query.
+Every hit also carries automatic **highlighting** — see
+[Highlighting](#highlighting-highlight). Call from a query.
+
+## Highlighting (`highlight`)
+
+Highlighting is automatic; there is no argument to enable it. For each hit, every
+**searched field** (the collection's `searchFields`, or the `queryBy` subset when
+`queryBy` is provided) that contains a matched word gets an entry in
+`highlight`:
+
+```jsonc
+"highlight": {
+  "name": {
+    "snippet": "Red <mark>Shoe</mark>",   // field text, matched words wrapped
+    "matched_tokens": ["Shoe"]            // matched surface forms (deduped)
+  }
+}
+```
+
+- `snippet` is the **full field value** with each matched word wrapped in
+  `<mark>…</mark>`; all other characters are HTML-escaped (`&`, `<`, `>`), so the
+  snippet is safe to render as HTML.
+- `matched_tokens` is the deduped list of the original surface forms (preserving
+  case and accents) of the words that were marked.
+- A field with no matched word is omitted. In **browse mode** (empty/whitespace
+  `q`), nothing matched, so `highlight` is `{}`.
+
+## Weighted ranking (`rankBy`)
+
+`rankBy` blends the relevance score with weighted numeric stored fields
+(Elasticsearch `field_value_factor` style) to influence **ordering only** — e.g.
+boost popular or higher-priced items. Shape:
+
+```ts
+rankBy?: { text?: number; fields?: { field: string; weight: number }[] }
+```
+
+The per-document ordering score is:
+
+```text
+score = (text ?? 1) * text_match + Σ ( weight * Number(stored[field] || 0) )
+```
+
+A missing or non-numeric field contributes `0`. `text` defaults to `1`, so
+`rankBy: { fields: [{ field: "popularity", weight: 0.1 }] }` adds `0.1 ×
+popularity` to each document's relevance score for ordering purposes. The
+reported `text_match` is **unchanged** — `rankBy` only reorders.
+
+## Multi-key sort (`sortBy`)
+
+`sortBy` replaces the default relevance ordering with an explicit list of sort
+keys, applied lexicographically (first key primary, then ties broken by the
+next, and so on). Shape:
+
+```ts
+sortBy?: { field: string; order: "asc" | "desc" }[]
+```
+
+- `field` is either `"_text_match"` (the ordering score, which honors `rankBy`
+  if present) or any numeric stored field (coerced with `Number(...)`; missing
+  or non-numeric → `0`).
+- `order` is `"asc"` or `"desc"`.
+- The final tie-break is always document `id` ascending, for deterministic
+  output.
+- With no `sortBy`, the default is relevance score descending
+  (`[{ field: "_text_match", order: "desc" }]`).
+
+Example — primary by price ascending, then by relevance descending:
+
+```ts
+sortBy: [
+  { field: "price", order: "asc" },
+  { field: "_text_match", order: "desc" },
+]
+```
+
+> **`text_match` is always the RAW relevance score** (exact > prefix > typo).
+> `rankBy` and `sortBy` affect result **ordering only**; they never change the
+> `text_match` value reported on each hit.
 
 ## Filtering (`filter_by`)
 
@@ -286,6 +386,12 @@ at `maxFacetValues` (default `10`). Documents whose facet field is missing or
   (so distance-1 → `1.5`, distance-2 → `1.0`); a document's `text_match` is the
   sum of its best per-token scores. Results are sorted by `text_match`
   descending, with ties broken by document `id` ascending.
+- **Highlighting marks matched words in searched fields** — the marked fields
+  are the `queryBy` subset when provided, otherwise all `searchFields`; only
+  fields whose stored value is a string are highlighted.
+- **`rankBy`/`sortBy` reorder, never rescore** — the reported `text_match` is
+  always the raw relevance score; `rankBy` and `sortBy` only change the order in
+  which hits are returned.
 - **`queryBy`** — when provided, a document only matches a token if that token
   appears in one of the listed fields.
 - **Empty query = match-all** — useful for "browse all" / initial listings,
@@ -302,19 +408,26 @@ at `maxFacetValues` (default `10`). Documents whose facet field is missing or
 The following are **not** implemented yet and are documented honestly so you can
 decide whether this release fits your use case:
 
-- **No highlighting.** `highlight` is always `{}`; matched terms are not marked
-  up in the returned documents.
+- **Highlighting is full-field-value only.** The `snippet` highlights the
+  entire field value; there is no windowed/truncated snippet around the match.
+  The `<mark>` tag is fixed and not configurable. Marking is per-term, not
+  per-document provenance: any word in a searched field whose term matched the
+  query is marked, even if a different document supplied the matching posting.
 - **No negation in `filter_by`.** Exact, in-set, numeric comparator, and range
   clauses are supported, but `!=` / "not equal" is not yet.
+- **Sort and rank are in-memory, bounded-scale.** `rankBy`/`sortBy` ordering
+  (and faceting) are computed in-memory over the current result set; there is no
+  write-maintained indexed sort/filter table.
 - **Faceting is over scalar fields only, and in-memory.** Array-valued fields are
   not yet expanded into multiple facet values, and there is no write-maintained
   indexed filters table — filtering and faceting are evaluated in-memory over the
-  current result set. Indexed, write-maintained filters and array facets are a
-  Phase 4 concern.
+  current result set. Indexed, write-maintained filters/sort and array facets are
+  a Phase 4 concern.
 - **Correct within bounded scale only.** A single query term that matches more
   than ~16k postings exceeds Convex's per-query read limit (the "hot-term"
   problem). Within that ceiling, `found` and result exactness hold; beyond it
-  the query will fail. Large-scale hardening is a later phase.
+  the query will fail. Arbitrary-scale hardening (sharding, indexed
+  filters/sort, array facets) is Phase 4.
 
 ### Migration: re-index after upgrading
 
