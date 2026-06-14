@@ -300,3 +300,57 @@ describe("highlighting + weighted sort", () => {
     expect(r.hits.map((h: any) => h.document.id)).toEqual(["2", "1"]);
   });
 });
+
+describe("S1 lean reads", () => {
+  async function setupFacets() {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "shop",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [
+        { field: "brand", type: "string" },
+        { field: "price", type: "number" },
+      ],
+      facetFields: ["brand"],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "shop",
+      docs: [
+        { id: "1", doc: { name: "running shoe", brand: "Aurora", price: 90 } },
+        { id: "2", doc: { name: "trail shoe", brand: "Aurora", price: 110 } },
+        { id: "3", doc: { name: "rain jacket", brand: "Nimbus", price: 150 } },
+      ],
+    });
+    return t;
+  }
+
+  it("out_of comes from the counter and matches the collection size", async () => {
+    const t = await setup(); // 3 docs (p1,p2,p3)
+    const r = await t.query(api.search.search, { collection: "products", q: "" });
+    expect(r.out_of).toBe(3);
+  });
+
+  it("text search returns the same results as before (lean path)", async () => {
+    const t = await setup();
+    const r = await t.query(api.search.search, { collection: "products", q: "red" });
+    expect(r.found).toBe(2);
+    expect(r.out_of).toBe(3);
+    expect(r.hits.map((h: any) => h.document.name).sort()).toEqual(["Red Hat", "Red Running Shoe"]);
+  });
+
+  it("simple browse pages off the aggregate (docId order)", async () => {
+    const t = await setup();
+    const r = await t.query(api.search.search, { collection: "products", q: "", page: 1, perPage: 2 });
+    expect(r.found).toBe(3);
+    expect(r.hits.length).toBe(2);
+    expect(r.hits.map((h: any) => h.document.name)).toEqual(["Red Running Shoe", "Blue Running Jacket"]);
+  });
+
+  it("browse + filter still works (fallback path)", async () => {
+    const t = await setupFacets(); // shop collection w/ brand filter
+    const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "brand:Aurora" });
+    expect(r.found).toBe(2);
+  });
+});

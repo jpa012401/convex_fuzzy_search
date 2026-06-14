@@ -7,6 +7,7 @@ import { candidateTermsForToken } from "./matching";
 import { parseFilter } from "./filter";
 import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
+import { collectionCount, pageDocIds } from "./counters";
 import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
@@ -34,6 +35,25 @@ async function docScoresForToken(
   return docScore;
 }
 
+// Load only the named docs (bounded by ids.length, not the collection).
+async function loadDocs(
+  ctx: QueryCtx,
+  collection: string,
+  ids: string[],
+): Promise<Map<string, unknown>> {
+  const byId = new Map<string, unknown>();
+  for (const id of ids) {
+    const row = await ctx.db
+      .query("documents")
+      .withIndex("by_collection_doc", (q) =>
+        q.eq("collection", collection).eq("docId", id),
+      )
+      .unique();
+    if (row) byId.set(id, row.stored);
+  }
+  return byId;
+}
+
 export const search = query({
   args: {
     collection: v.string(),
@@ -47,99 +67,100 @@ export const search = query({
     rankBy: v.optional(
       v.object({
         text: v.optional(v.number()),
-        fields: v.optional(
-          v.array(v.object({ field: v.string(), weight: v.number() })),
-        ),
+        fields: v.optional(v.array(v.object({ field: v.string(), weight: v.number() }))),
       }),
     ),
     sortBy: v.optional(
-      v.array(
-        v.object({
-          field: v.string(),
-          order: v.union(v.literal("asc"), v.literal("desc")),
-        }),
-      ),
+      v.array(v.object({ field: v.string(), order: v.union(v.literal("asc"), v.literal("desc")) })),
     ),
   },
   handler: async (ctx, args): Promise<SearchResult> => {
     const start = Date.now();
     const collection = await requireCollection(ctx, args.collection);
-
     const page = Math.max(1, Math.floor(args.page ?? 1));
     const perPage = Math.min(MAX_PER_PAGE, Math.max(1, Math.floor(args.perPage ?? 10)));
-
-    const allDocs = await ctx.db
-      .query("documents")
-      .withIndex("by_collection_doc", (q) => q.eq("collection", args.collection))
-      .collect();
-    const out_of = allDocs.length;
-    const byId = new Map(allDocs.map((d) => [d.docId, d.stored]));
+    const out_of = await collectionCount(ctx, args.collection);
 
     const tokens = tokenize(args.q);
-    const matchedTerms = new Set<string>();
+    const hasFilter = !!(args.filterBy && args.filterBy.trim() !== "");
+    const hasFacets = !!(args.facetBy && args.facetBy.length > 0);
+    const hasCustomOrder =
+      (!!args.sortBy && args.sortBy.length > 0) ||
+      (!!args.rankBy && ((args.rankBy.fields?.length ?? 0) > 0 || args.rankBy.text !== undefined));
 
+    // ---- LEAN BROWSE: empty q, no filter/facets/custom order -> page off the aggregate.
+    if (tokens.length === 0 && !hasFilter && !hasFacets && !hasCustomOrder) {
+      const ids = await pageDocIds(ctx, args.collection, (page - 1) * perPage, perPage);
+      const byId = await loadDocs(ctx, args.collection, ids);
+      const hits: Hit[] = ids.map((id) => ({
+        document: (byId.get(id) ?? {}) as Record<string, unknown>,
+        highlight: {},
+        text_match: 0,
+      }));
+      return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
+    }
+
+    // ---- Build the working set (byId) + match ids + scores.
     let matchedIds: string[];
     let scoreById: Map<string, number> | null = null;
+    const matchedTerms = new Set<string>();
+    let byId: Map<string, unknown>;
 
-    if (tokens.length === 0) {
-      matchedIds = allDocs.map((d) => d.docId);
-    } else {
+    if (tokens.length > 0) {
+      // TEXT PATH: candidate set from postings; load ONLY those docs.
       const perToken: Map<string, number>[] = [];
       for (let i = 0; i < tokens.length; i++) {
-        const candidates = await candidateTermsForToken(
-          ctx,
-          args.collection,
-          tokens[i],
-          i === tokens.length - 1,
-        );
+        const candidates = await candidateTermsForToken(ctx, args.collection, tokens[i], i === tokens.length - 1);
         for (const term of candidates.keys()) matchedTerms.add(term);
-        perToken.push(
-          await docScoresForToken(ctx, args.collection, candidates, args.queryBy),
-        );
+        perToken.push(await docScoresForToken(ctx, args.collection, candidates, args.queryBy));
       }
       perToken.sort((a, b) => a.size - b.size);
       const [first, ...rest] = perToken;
       scoreById = new Map();
-      for (const [docId, s0] of first) {
-        if (rest.every((m) => m.has(docId))) {
-          let total = s0;
-          for (const m of rest) total += m.get(docId)!;
-          scoreById.set(docId, total);
+      if (first) {
+        for (const [docId, s0] of first) {
+          if (rest.every((m) => m.has(docId))) {
+            let total = s0;
+            for (const m of rest) total += m.get(docId)!;
+            scoreById.set(docId, total);
+          }
         }
       }
       matchedIds = [...scoreById.keys()];
+      byId = await loadDocs(ctx, args.collection, matchedIds);
+    } else {
+      // FALLBACK (browse + filter/facets/custom order): load the whole collection.
+      const allDocs = await ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q) => q.eq("collection", args.collection))
+        .collect();
+      byId = new Map(allDocs.map((d) => [d.docId, d.stored]));
+      matchedIds = allDocs.map((d) => d.docId);
     }
 
-    // Apply structured filter (in-memory over already-loaded stored docs).
-    if (args.filterBy && args.filterBy.trim() !== "") {
+    const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
+
+    if (hasFilter) {
       const fieldTypes: Record<string, "string" | "number"> = {};
       for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
-      const predicate = parseFilter(args.filterBy, fieldTypes);
-      matchedIds = matchedIds.filter((id) =>
-        predicate((byId.get(id) ?? {}) as Record<string, unknown>),
-      );
+      const predicate = parseFilter(args.filterBy as string, fieldTypes);
+      matchedIds = matchedIds.filter((id) => predicate(storedOf(id)));
     }
 
     const found = matchedIds.length;
 
-    // Order: weighted/relevance score per doc, optional multi-key sort, docId tie-break.
     const rawScore = (id: string) => (scoreById ? (scoreById.get(id) ?? 0) : 0);
-    const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
-    const orderScore = (id: string) =>
-      orderingScore(rawScore(id), storedOf(id), args.rankBy);
+    const orderScore = (id: string) => orderingScore(rawScore(id), storedOf(id), args.rankBy);
     matchedIds.sort((a, b) =>
       compareMatches(a, b, { score: orderScore, stored: storedOf, sortBy: args.sortBy }),
     );
 
-    // Faceting over the full (filtered) result set — query-scoped counts.
     const facet_counts: FacetCount[] = [];
-    if (args.facetBy && args.facetBy.length > 0) {
+    if (hasFacets) {
       const declared = new Set(collection.facetFields ?? []);
       const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
-      for (const field of args.facetBy) {
-        if (!declared.has(field)) {
-          throw new Error(`Field "${field}" is not a declared facet field`);
-        }
+      for (const field of args.facetBy as string[]) {
+        if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
         const tally = new Map<string, number>();
         for (const id of matchedIds) {
           const raw = storedOf(id)[field];
@@ -171,13 +192,6 @@ export const search = query({
       return { document: stored, highlight, text_match: rawScore(id) };
     });
 
-    return {
-      found,
-      page,
-      out_of,
-      search_time_ms: Date.now() - start,
-      hits,
-      facet_counts,
-    };
+    return { found, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
   },
 });
