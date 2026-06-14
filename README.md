@@ -423,11 +423,39 @@ decide whether this release fits your use case:
   indexed filters table — filtering and faceting are evaluated in-memory over the
   current result set. Indexed, write-maintained filters/sort and array facets are
   a Phase 4 concern.
-- **Correct within bounded scale only.** A single query term that matches more
-  than ~16k postings exceeds Convex's per-query read limit (the "hot-term"
-  problem). Within that ceiling, `found` and result exactness hold; beyond it
-  the query will fail. Arbitrary-scale hardening (sharding, indexed
-  filters/sort, array facets) is Phase 4.
+- **Correct within bounded scale only.** Each query loads the collection's
+  documents to compute `out_of`, hydrate hits, and evaluate filtering, faceting,
+  and sorting in memory; and a single query term matching more than ~16k postings
+  exceeds Convex's per-query read limit (the "hot-term" problem). Within that
+  ceiling (roughly tens of thousands of documents per collection) everything is
+  **exact**; beyond it the query will exceed limits.
+
+### Scaling beyond the bounded limit (Phase 4 — designed, not yet built)
+
+The bounded-scale ceiling is **not a permanent wall** — it is a deliberate
+stopping point. The component is intentionally exact-and-simple for the common
+case, and a documented **Phase 4** lifts it to arbitrary (millions-of-docs)
+scale when a real workload needs it. It is decomposed into independently
+buildable pieces (see
+[the Phase 4 design spec](./docs/superpowers/specs/2026-06-13-typesense-convex-phase4-design.md)):
+
+- **Indexed retrieval** — replace the per-query full-collection load with a
+  sharded `out_of` counter, an ordered document index for browse/paging, a
+  write-maintained `filters` table, precomputed sharded facet counters, and an
+  indexed numeric sort. This is the core scale unlock.
+- **Postings sharding + early termination** — bound hot-term postings reads.
+- **Async bulk import** — stage and background-index large imports (today
+  `upsertMany` runs in a single mutation and is bounded by per-mutation limits).
+  This is the recommended first piece, and is independent of the others.
+- **Array-valued facets/filters** — expand array fields (e.g. `tags`) into
+  multiple facet/filter values.
+
+**Fundamental tradeoff to expect at that scale:** exact query-scoped
+`facet_counts` and exact `found` require counting the entire match set, which is
+unbounded — so at very large scale they necessarily become **bounded estimates,
+explicitly flagged in the response**, while staying exact below the threshold.
+That tradeoff is why Phase 4 is opt-in rather than always-on: most collections
+never need it and are better served by the exact model above.
 
 ### Migration: re-index after upgrading
 
