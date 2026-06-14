@@ -9,10 +9,13 @@ import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
 import { collectionCount, pageDocIds } from "./counters";
 import { readFacetCounts } from "./facetCounts";
-import { specMatches, canonicalSpecId, pageSortedDocIds } from "./sortIndex";
+import { specMatches, canonicalSpecId, pageSortedDocIds, pageSortedDocIdsRange } from "./sortIndex";
+import { evalTerms } from "./score";
 import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
+const DEFAULT_RERANK_WINDOW = 200;
+const MAX_RERANK_WINDOW = 1000;
 
 // Load only the named docs (bounded by ids.length, not the collection).
 async function loadDocs(
@@ -56,6 +59,19 @@ export const search = query({
     sortBy: v.optional(
       v.array(v.object({ field: v.string(), order: v.union(v.literal("asc"), v.literal("desc")) })),
     ),
+    rank: v.optional(
+      v.object({
+        profile: v.string(),
+        weights: v.optional(v.record(v.string(), v.number())),
+        context: v.optional(
+          v.object({
+            now: v.optional(v.number()),
+            origin: v.optional(v.object({ lat: v.number(), lng: v.number() })),
+            sets: v.optional(v.record(v.string(), v.array(v.string()))),
+          }),
+        ),
+      }),
+    ),
   },
   handler: async (ctx, args): Promise<SearchResult> => {
     const start = Date.now();
@@ -70,7 +86,12 @@ export const search = query({
     const hasSortBy = !!args.sortBy && args.sortBy.length > 0;
     const hasRankBy =
       !!args.rankBy && ((args.rankBy.fields?.length ?? 0) > 0 || args.rankBy.text !== undefined);
-    const hasCustomOrder = hasSortBy || hasRankBy;
+    const rankProfile = args.rank ? collection.rankProfiles?.[args.rank.profile] : undefined;
+    if (args.rank && !rankProfile) {
+      throw new Error(`Unknown rank profile "${args.rank.profile}"`);
+    }
+    const hasRank = !!rankProfile;
+    const hasCustomOrder = hasSortBy || hasRankBy || hasRank;
 
     // ---- LEAN BROWSE: empty q, no filter/facets/custom order -> page off the aggregate.
     if (tokens.length === 0 && !hasFilter && !hasFacets && !hasCustomOrder) {
@@ -81,7 +102,7 @@ export const search = query({
         highlight: {},
         text_match: 0,
       }));
-      return { found: out_of, found_approximate: false, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
+      return { found: out_of, found_approximate: false, reranked: true, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
     }
 
     // ---- LEAN BROWSE + FACETS: empty q, no filter, no custom order -> page off
@@ -102,7 +123,7 @@ export const search = query({
         const counts = await readFacetCounts(ctx, args.collection, field, maxValues);
         facet_counts.push({ field_name: field, counts });
       }
-      return { found: out_of, found_approximate: false, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+      return { found: out_of, found_approximate: false, reranked: true, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
     }
 
     // ---- LEAN BROWSE + SORT: empty q, no filter, no rankBy, and sortBy matches
@@ -110,7 +131,7 @@ export const search = query({
     // found is out_of (every doc is indexed per spec); before the sort-index
     // backfill runs for a pre-S4 collection it may exceed the indexed entries,
     // so the final page can be short until backfill completes.
-    if (tokens.length === 0 && !hasFilter && hasSortBy && !hasRankBy) {
+    if (tokens.length === 0 && !hasFilter && hasSortBy && !hasRankBy && !hasRank) {
       const spec = specMatches(args.sortBy, collection.sortSpecs ?? []);
       if (spec) {
         const ids = await pageSortedDocIds(
@@ -136,7 +157,7 @@ export const search = query({
             facet_counts.push({ field_name: field, counts });
           }
         }
-        return { found: out_of, found_approximate: false, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+        return { found: out_of, found_approximate: false, reranked: true, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
       }
     }
 
@@ -159,6 +180,7 @@ export const search = query({
     let byId: Map<string, unknown>;
     let truncated = false;
     let singleExactTerm: string | null = null;
+    let reranked = true;
 
     if (tokens.length > 0) {
       // TEXT PATH: driver-token intersection (bounded). Intersect with filter; load only matched docs.
@@ -173,6 +195,11 @@ export const search = query({
     } else if (filterIds) {
       // BROWSE + FILTER: the filter set is the result set (no full-collection load).
       matchedIds = [...filterIds];
+      byId = await loadDocs(ctx, args.collection, matchedIds);
+    } else if (hasRank) {
+      // RANK BROWSE: candidate window off the profile's base sortSpec (batched).
+      const windowSize = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile!.window ?? DEFAULT_RERANK_WINDOW)));
+      matchedIds = await pageSortedDocIdsRange(ctx, args.collection, rankProfile!.base, windowSize);
       byId = await loadDocs(ctx, args.collection, matchedIds);
     } else {
       // BROWSE + facets/custom-order but NO filter: still full load (S3/S4 replace this).
@@ -202,19 +229,46 @@ export const search = query({
         if (termRow) found = termRow.docCount;
       }
     }
+    if (hasRank && tokens.length === 0 && !filterIds) {
+      found = out_of;
+    }
 
     const rawScore = (id: string) => (scoreById ? (scoreById.get(id) ?? 0) : 0);
-    const orderScore = (id: string) => orderingScore(rawScore(id), storedOf(id), args.rankBy);
-    matchedIds.sort((a, b) =>
-      compareMatches(a, b, { score: orderScore, stored: storedOf, sortBy: args.sortBy }),
-    );
+    if (hasRank) {
+      const windowSize = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile!.window ?? DEFAULT_RERANK_WINDOW)));
+      // Order before windowing: browse = base order (already), text = relevance desc,
+      // filter-only = arbitrary matched-set order.
+      let ordered = matchedIds;
+      if (tokens.length > 0) {
+        ordered = [...matchedIds].sort((a, b) => rawScore(b) - rawScore(a) || (a < b ? -1 : a > b ? 1 : 0));
+      }
+      if (ordered.length > windowSize) {
+        ordered = ordered.slice(0, windowSize);
+        reranked = false;
+      }
+      const baseIdx = new Map(ordered.map((id, i) => [id, i]));
+      const ctxRank = args.rank!.context ?? {};
+      const score = (id: string) =>
+        evalTerms(storedOf(id), rankProfile!.terms, args.rank!.weights, rawScore(id), ctxRank);
+      matchedIds = [...ordered].sort((a, b) => score(b) - score(a) || (baseIdx.get(a)! - baseIdx.get(b)!));
+    } else {
+      const orderScore = (id: string) => orderingScore(rawScore(id), storedOf(id), args.rankBy);
+      matchedIds.sort((a, b) =>
+        compareMatches(a, b, { score: orderScore, stored: storedOf, sortBy: args.sortBy }),
+      );
+    }
 
     const facet_counts: FacetCount[] = [];
     if (hasFacets) {
       const declared = new Set(collection.facetFields ?? []);
       const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+      const globalFacets = hasRank && tokens.length === 0 && !filterIds;
       for (const field of args.facetBy as string[]) {
         if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
+        if (globalFacets) {
+          facet_counts.push({ field_name: field, counts: await readFacetCounts(ctx, args.collection, field, maxValues) });
+          continue;
+        }
         const tally = new Map<string, number>();
         for (const id of matchedIds) {
           const raw = storedOf(id)[field];
@@ -230,7 +284,18 @@ export const search = query({
       }
     }
 
-    const pageIds = matchedIds.slice((page - 1) * perPage, (page - 1) * perPage + perPage);
+    const pageStart = (page - 1) * perPage;
+    const rerankWindow = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile?.window ?? DEFAULT_RERANK_WINDOW)));
+    let pageIds: string[];
+    if (hasRank && tokens.length === 0 && !filterIds && pageStart >= rerankWindow) {
+      // Beyond the re-ranked window: serve the plain base order (head-only re-rank).
+      pageIds = await pageSortedDocIds(ctx, args.collection, rankProfile!.base, pageStart, perPage);
+      const tailById = await loadDocs(ctx, args.collection, pageIds);
+      for (const [k, val] of tailById) byId.set(k, val);
+      reranked = false;
+    } else {
+      pageIds = matchedIds.slice(pageStart, pageStart + perPage);
+    }
     const fields = args.queryBy ?? collection.searchFields;
     const hits: Hit[] = pageIds.map((id) => {
       const stored = storedOf(id);
@@ -246,6 +311,6 @@ export const search = query({
       return { document: stored, highlight, text_match: rawScore(id) };
     });
 
-    return { found, found_approximate, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+    return { found, found_approximate, reranked, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
   },
 });
