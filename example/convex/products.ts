@@ -24,6 +24,13 @@ const FILTER_FIELDS = [
 ];
 const FACET_FIELDS = ["brand", "category", "subcategory", "inStock"];
 
+// Sort orders we index for scalable unfiltered browse-by-sort (must match the
+// sortBy the UI sends). Each is a declared composite spec.
+export const SORT_SPECS = [
+  [{ field: "price", order: "asc" as const }],
+  [{ field: "price", order: "desc" as const }],
+];
+
 async function createProductsCollection(ctx: any) {
   await search.createCollection(ctx, {
     name: COLLECTION,
@@ -31,6 +38,7 @@ async function createProductsCollection(ctx: any) {
     storedFields: "all",
     filterFields: FILTER_FIELDS,
     facetFields: FACET_FIELDS,
+    sortSpecs: SORT_SPECS,
   });
 }
 
@@ -200,6 +208,24 @@ export const backfillFacets = mutation({
     });
     if (!r.done) {
       await ctx.scheduler.runAfter(0, api.products.backfillFacets, { cursor: r.cursor, batch });
+    }
+    return r;
+  },
+});
+
+// One-time sort-index backfill driver for collections indexed before the S4
+// sort index existed. Self-chains in the background like backfillFacets.
+// Idempotent (insert-if-absent), so re-running is safe.
+export const backfillSortIndex = mutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
+  handler: async (ctx, { cursor, batch }) => {
+    const r = await search.backfillSortIndexPage(ctx, {
+      collection: COLLECTION,
+      cursor: cursor ?? null,
+      batch: batch ?? 100,
+    });
+    if (!r.done) {
+      await ctx.scheduler.runAfter(0, api.products.backfillSortIndex, { cursor: r.cursor, batch });
     }
     return r;
   },

@@ -47,6 +47,7 @@ export class FuzzySearch {
       storedFields?: "all" | string[];
       filterFields?: { field: string; type: "string" | "number" }[];
       facetFields?: string[];
+      sortSpecs?: { field: string; order: "asc" | "desc" }[][];
     },
   ) {
     return ctx.runMutation(this.component.collections.createCollection, args);
@@ -104,6 +105,16 @@ export class FuzzySearch {
     args: { collection: string; cursor?: string | null; batch?: number },
   ): Promise<{ cursor: string | null; done: boolean }> {
     return ctx.runMutation(this.component.backfill.backfillFiltersPage, args);
+  }
+
+  // Rebuild the sort-index entries for a collection, one bounded page at a time.
+  // Returns the next cursor (null when done). Idempotent (insert-if-absent), so
+  // safe to re-run. For collections indexed before the S4 sort index existed.
+  async backfillSortIndexPage(
+    ctx: MutationCtx,
+    args: { collection: string; cursor?: string | null; batch?: number },
+  ): Promise<{ cursor: string | null; done: boolean }> {
+    return ctx.runMutation(this.component.backfill.backfillSortIndexPage, args);
   }
 
   // Rebuild the facet-count rows for a collection, one bounded page at a time.

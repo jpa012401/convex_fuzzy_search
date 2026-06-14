@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { addDoc } from "./counters";
 import { requireCollection } from "./collections";
 import { incrementFacet, clearCollectionFacets } from "./facetCounts";
+import { addSortEntry } from "./sortIndex";
 
 // Backfill the doc counter for a collection, one bounded page at a time.
 // Returns the next cursor (null when done). Idempotent (addDoc uses
@@ -136,6 +137,43 @@ export const backfillFacetCountsPage = mutation({
         const raw = stored[field];
         if (raw === undefined || raw === null) continue;
         await incrementFacet(ctx, args.collection, field, String(raw));
+      }
+    }
+    const done = page.length <= batch;
+    return { cursor: done ? null : rows[rows.length - 1].docId, done };
+  },
+});
+
+// Backfill (rebuild) the sort-index entries for a collection, one bounded page
+// at a time. Re-derives each doc's composite key per declared sortSpec from its
+// `stored` snapshot and inserts it. Idempotent by construction
+// (insertIfDoesNotExist with a deterministic key), so safe to re-run; no
+// clear-then-rebuild needed. For deployments that indexed documents before the
+// S4 sort index existed (the write path now maintains entries automatically).
+// Same manual cursor paging as the other backfills.
+export const backfillSortIndexPage = mutation({
+  args: {
+    collection: v.string(),
+    cursor: v.optional(v.union(v.string(), v.null())),
+    batch: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const col = await requireCollection(ctx, args.collection);
+    const batch = args.batch ?? 100;
+    const cursor = args.cursor ?? null;
+    const page = await ctx.db
+      .query("documents")
+      .withIndex("by_collection_doc", (q) =>
+        cursor === null
+          ? q.eq("collection", args.collection)
+          : q.eq("collection", args.collection).gt("docId", cursor),
+      )
+      .take(batch + 1);
+    const rows = page.slice(0, batch);
+    for (const d of rows) {
+      const stored = d.stored as Record<string, unknown>;
+      for (const spec of col.sortSpecs ?? []) {
+        await addSortEntry(ctx, args.collection, spec, stored, d.docId);
       }
     }
     const done = page.length <= batch;
