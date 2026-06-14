@@ -47,4 +47,15 @@ export default defineSchema({
   })
     .index("by_collection_gram", ["collection", "gram"]) // fuzzy candidate lookup
     .index("by_collection_term", ["collection", "term"]), // cleanup when a term is removed
+
+  filters: defineTable({
+    collection: v.string(),
+    field: v.string(),
+    docId: v.string(),
+    strVal: v.optional(v.string()),
+    numVal: v.optional(v.number()),
+  })
+    .index("by_str", ["collection", "field", "strVal"])
+    .index("by_num", ["collection", "field", "numVal"])
+    .index("by_doc", ["collection", "docId"]),
 });
