@@ -86,16 +86,12 @@ export async function pageSortedDocIds(
   limit: number,
 ): Promise<string[]> {
   const namespace = ns(collection, specId);
-  const tTotal = Date.now(); // [perf] temporary instrumentation — remove later
   const total = await sortAgg.count(ctx, { namespace });
-  const totalMs = Date.now() - tTotal; // [perf]
-  const tAt = Date.now(); // [perf]
   const ids: string[] = [];
   for (let i = 0; i < limit && offset + i < total; i++) {
     const item = await sortAgg.at(ctx, offset + i, { namespace });
     ids.push(item.id);
   }
-  console.log(`[perf] pageSortedDocIds spec=${specId} offset=${offset} limit=${limit} total=${total} count_ms=${totalMs} at_loop_ms=${Date.now() - tAt} (${ids.length} at() calls)`); // [perf]
   return ids;
 }
 

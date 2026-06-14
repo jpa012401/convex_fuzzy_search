@@ -62,9 +62,7 @@ export const search = query({
     const collection = await requireCollection(ctx, args.collection);
     const page = Math.max(1, Math.floor(args.page ?? 1));
     const perPage = Math.min(MAX_PER_PAGE, Math.max(1, Math.floor(args.perPage ?? 10)));
-    const tCount = Date.now(); // [perf] temporary instrumentation — remove later
     const out_of = await collectionCount(ctx, args.collection);
-    const countMs = Date.now() - tCount; // [perf]
 
     const tokens = tokenize(args.q);
     const hasFilter = !!(args.filterBy && args.filterBy.trim() !== "");
@@ -74,25 +72,10 @@ export const search = query({
       !!args.rankBy && ((args.rankBy.fields?.length ?? 0) > 0 || args.rankBy.text !== undefined);
     const hasCustomOrder = hasSortBy || hasRankBy;
 
-    // [perf] which retrieval branch is this query taking?
-    const branch =
-      tokens.length === 0 && !hasFilter && !hasFacets && !hasCustomOrder ? "lean-browse"
-      : tokens.length === 0 && !hasFilter && hasFacets && !hasCustomOrder ? "lean-browse+facets"
-      : tokens.length === 0 && !hasFilter && hasSortBy && !hasRankBy ? "lean-browse+sort(maybe)"
-      : tokens.length > 0 ? "text"
-      : hasFilter ? "filter"
-      : "full-load(browse+facet/sort/rank, no filter)";
-    console.log(`[perf] search branch=${branch} collection=${args.collection} page=${page} perPage=${perPage} out_of=${out_of} count_ms=${countMs} flags=${JSON.stringify({ q: args.q, tokens: tokens.length, hasFilter, hasFacets, hasSortBy, hasRankBy })}`);
-
     // ---- LEAN BROWSE: empty q, no filter/facets/custom order -> page off the aggregate.
     if (tokens.length === 0 && !hasFilter && !hasFacets && !hasCustomOrder) {
-      const tPage = Date.now(); // [perf]
       const ids = await pageDocIds(ctx, args.collection, (page - 1) * perPage, perPage);
-      const pageMs = Date.now() - tPage; // [perf]
-      const tLoad = Date.now(); // [perf]
       const byId = await loadDocs(ctx, args.collection, ids);
-      const loadMs = Date.now() - tLoad; // [perf]
-      console.log(`[perf] lean-browse ids=${ids.length} pageDocIds_ms=${pageMs} loadDocs_ms=${loadMs} total_ms=${Date.now() - start}`); // [perf]
       const hits: Hit[] = ids.map((id) => ({
         document: (byId.get(id) ?? {}) as Record<string, unknown>,
         highlight: {},
