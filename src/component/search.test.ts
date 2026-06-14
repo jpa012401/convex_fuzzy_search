@@ -223,7 +223,8 @@ describe("highlighting + weighted sort", () => {
     const t = await setupShop();
     const r = await t.query(api.search.search, { collection: "shop", q: "running" });
     const hit = r.hits.find((h: any) => h.document.id === "1");
-    expect(hit.highlight).toEqual({
+    expect(hit).toBeDefined();
+    expect(hit!.highlight).toEqual({
       name: { snippet: "Red <mark>Running</mark> Shoe", matched_tokens: ["Running"] },
     });
   });
@@ -232,7 +233,8 @@ describe("highlighting + weighted sort", () => {
     const t = await setupShop();
     const r = await t.query(api.search.search, { collection: "shop", q: "run" });
     const hit = r.hits.find((h: any) => h.document.id === "1");
-    expect(hit.highlight.name.snippet).toContain("<mark>Running</mark>");
+    expect(hit).toBeDefined();
+    expect(hit!.highlight.name.snippet).toContain("<mark>Running</mark>");
   });
 
   it("browse mode yields empty highlight", async () => {

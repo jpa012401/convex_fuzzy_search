@@ -1,7 +1,7 @@
 export type Hit = {
   document: Record<string, unknown>;
   highlight: Record<string, { snippet: string; matched_tokens: string[] }>;
-  text_match: number; // 0 placeholder in Phase 1
+  text_match: number; // raw relevance score (exact>prefix>typo); 0 in browse mode
 };
 
 export type FacetCount = {
