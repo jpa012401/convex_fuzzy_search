@@ -122,7 +122,11 @@ export function Storefront() {
           active={sort === "relevance"}
         />
 
-        <p>{result ? `${result.found} results · ${result.search_time_ms} ms` : "Loading…"}</p>
+        <p>
+          {result
+            ? `${result.found_approximate ? "≈" : ""}${result.found} results · ${result.search_time_ms} ms`
+            : "Loading…"}
+        </p>
         <ProductGrid hits={result?.hits ?? []} showScore={sort === "relevance"} />
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
           <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
