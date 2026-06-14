@@ -86,6 +86,16 @@ export class FuzzySearch {
     return ctx.runMutation(this.component.write.delete, args);
   }
 
+  // Backfill the doc counter for a collection, one bounded page at a time.
+  // Returns the next cursor (null when done). Idempotent and safe to re-run.
+  // For collections indexed before the aggregate counter existed.
+  async backfillCounterPage(
+    ctx: MutationCtx,
+    args: { collection: string; cursor?: string | null; batch?: number },
+  ): Promise<{ cursor: string | null; done: boolean }> {
+    return ctx.runMutation(this.component.backfill.backfillCounterPage, args);
+  }
+
   async search(
     ctx: QueryCtx,
     args: {

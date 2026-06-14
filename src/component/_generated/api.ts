@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as backfill from "../backfill.js";
 import type * as collections from "../collections.js";
 import type * as counters from "../counters.js";
 import type * as filter from "../filter.js";
@@ -30,6 +31,7 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
+  backfill: typeof backfill;
   collections: typeof collections;
   counters: typeof counters;
   filter: typeof filter;

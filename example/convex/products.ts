@@ -149,6 +149,23 @@ export const startSeed = mutation({
   },
 });
 
+// One-time counter backfill driver for collections indexed before the S1
+// aggregate counter existed. Self-chains in the background like seedChain.
+export const backfillCounter = mutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
+  handler: async (ctx, { cursor, batch }) => {
+    const r = await search.backfillCounterPage(ctx, {
+      collection: COLLECTION,
+      cursor: cursor ?? null,
+      batch: batch ?? 500,
+    });
+    if (!r.done) {
+      await ctx.scheduler.runAfter(0, api.products.backfillCounter, { cursor: r.cursor, batch });
+    }
+    return r;
+  },
+});
+
 // --- query wrapper ---------------------------------------------------------
 export const searchProducts = query({
   args: {

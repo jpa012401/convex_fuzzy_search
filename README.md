@@ -423,12 +423,38 @@ decide whether this release fits your use case:
   indexed filters table — filtering and faceting are evaluated in-memory over the
   current result set. Indexed, write-maintained filters/sort and array facets are
   a Phase 4 concern.
-- **Correct within bounded scale only.** Each query loads the collection's
-  documents to compute `out_of`, hydrate hits, and evaluate filtering, faceting,
-  and sorting in memory; and a single query term matching more than ~16k postings
-  exceeds Convex's per-query read limit (the "hot-term" problem). Within that
-  ceiling (roughly tens of thousands of documents per collection) everything is
-  **exact**; beyond it the query will exceed limits.
+- **Correct within bounded scale only.** Read paths have been partially
+  un-bounded (see "Lean reads" below), but two limits remain. Browse combined
+  with filtering, faceting, or a custom sort/rank still loads the whole
+  collection into memory to evaluate those in-memory (Phase 4 slices S2–S4 lift
+  this). And a single query term matching more than ~16k postings exceeds
+  Convex's per-query read limit (the "hot-term" problem). Within that ceiling
+  (roughly tens of thousands of documents per collection) everything is
+  **exact**; beyond it such a query will exceed limits.
+
+### Lean reads (Phase 4 S1 — implemented)
+
+The first Phase 4 slice replaces the unconditional full-collection scan with an
+[`@convex-dev/aggregate`](https://www.npmjs.com/package/@convex-dev/aggregate)
+counter maintained on every write:
+
+- **`out_of` is an O(log n) aggregate count** — no full-collection scan to report
+  the collection size.
+- **Text queries load only the matched documents.** A query with search terms
+  builds its candidate set from the `postings` index and hydrates only those
+  documents — never the whole collection.
+- **Simple browse pages directly off the aggregate.** An empty query with no
+  filter, no facets, and no custom sort/rank reads the page's document ids
+  straight from the ordered aggregate (`at(offset)`), then loads just that page.
+- **Browse + filter/facet/custom-sort still loads the full collection.** When an
+  empty-query browse is combined with filtering, faceting, or a custom
+  `sortBy`/`rankBy`, the collection is still loaded in memory to evaluate them.
+  Indexed filters, sharded facet counters, and an indexed numeric sort are the
+  remaining Phase 4 slices (S2–S4).
+- **Still candidate-based for weighted ranking.** `rankBy` weighted ordering
+  remains computed in-memory over the candidate/result set; hot terms and exact
+  query-scoped facet counts at very large scale are still bounded as described
+  above.
 
 ### Scaling beyond the bounded limit (Phase 4 — designed, not yet built)
 
@@ -465,6 +491,21 @@ earlier version that did not maintain `terms`/`trigrams`, those documents will
 return **zero results for every query — even exact ones — until you re-upsert
 them**. After upgrading, re-run `upsert` (or your seed routine) for existing
 documents so their `terms`/`trigrams` rows are built.
+
+The Phase 4 S1 aggregate counter (`out_of`, lean browse) is likewise only
+populated on write. Collections indexed before S1 will report `out_of: 0` (and
+empty-browse will return nothing) until the counter is backfilled. You have two
+options:
+
+- **Re-upsert** existing documents (the same re-index step above also rebuilds
+  the counter), or
+- **Backfill the counter only**, without re-tokenizing, via
+  `search.backfillCounterPage(ctx, { collection, cursor, batch })`. It processes
+  one bounded page per call and returns `{ cursor, done }`; call it in a loop (or
+  self-chain it with `ctx.scheduler`) until `done` is `true`. It is idempotent
+  (`insertIfDoesNotExist`), so it is safe to re-run. See
+  [`example/convex/products.ts`](./example/convex/products.ts) (`backfillCounter`)
+  for a self-chaining driver.
 
 ## Running the example app
 

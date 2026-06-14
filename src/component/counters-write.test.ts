@@ -32,4 +32,22 @@ describe("write path maintains the counter", () => {
     await t.mutation(api.collections.deleteCollection, { name: "products" });
     expect(await t.run((ctx) => collectionCount(ctx, "products"))).toBe(0);
   });
+
+  it("backfill rebuilds the counter for pre-existing docs", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, { name: "products", searchFields: ["name"] });
+    // insert documents directly, bypassing the counter, to simulate pre-S1 data
+    await t.run(async (ctx) => {
+      await ctx.db.insert("documents", { collection: "products", docId: "x", stored: { name: "x" } });
+      await ctx.db.insert("documents", { collection: "products", docId: "y", stored: { name: "y" } });
+    });
+    expect(await t.run((ctx) => collectionCount(ctx, "products"))).toBe(0);
+    let cursor: string | null = null;
+    do {
+      const r: any = await t.mutation(api.backfill.backfillCounterPage, { collection: "products", cursor, batch: 1 });
+      cursor = r.cursor;
+    } while (cursor !== null);
+    expect(await t.run((ctx) => collectionCount(ctx, "products"))).toBe(2);
+  });
 });
