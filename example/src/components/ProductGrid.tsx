@@ -1,9 +1,10 @@
 type Hit = {
   document: Record<string, any>;
+  text_match?: number;
   highlight?: { name?: { snippet: string } };
 };
 
-export function ProductGrid({ hits }: { hits: Hit[] }) {
+export function ProductGrid({ hits, showScore }: { hits: Hit[]; showScore?: boolean }) {
   if (hits.length === 0) return <p>No products found.</p>;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 16 }}>
@@ -19,6 +20,11 @@ export function ProductGrid({ hits }: { hits: Hit[] }) {
           />
           <div style={{ color: "#666", fontSize: 13 }}>{h.document.brand}</div>
           <div>${h.document.price}</div>
+          {showScore && (
+            <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
+              popularity {h.document.popularity} · text_match {h.text_match}
+            </div>
+          )}
         </div>
       ))}
     </div>

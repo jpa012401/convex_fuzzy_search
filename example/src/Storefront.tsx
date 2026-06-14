@@ -28,6 +28,9 @@ export function Storefront() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [sort, setSort] = useState<SortKeyName>("relevance");
+  // Weighted-score (rankBy) controls: blend relevance with the `popularity` field.
+  const [textWeight, setTextWeight] = useState(1);
+  const [popWeight, setPopWeight] = useState(0);
   const seed = useMutation(api.products.seed);
 
   const filterBy = buildFilterBy(selected);
@@ -38,6 +41,7 @@ export function Storefront() {
     filterBy,
     facetBy: ["brand", "category"],
     sortBy: SORTS[sort],
+    rankBy: { text: textWeight, fields: [{ field: "popularity", weight: popWeight }] },
   });
 
   const totalPages = result ? Math.max(1, Math.ceil(result.found / PER_PAGE)) : 1;
@@ -64,13 +68,72 @@ export function Storefront() {
           </select>
           <button onClick={() => seed()}>Seed data</button>
         </div>
+
+        <WeightedScorePanel
+          textWeight={textWeight}
+          popWeight={popWeight}
+          onText={(w) => { setTextWeight(w); setPage(1); }}
+          onPop={(w) => { setPopWeight(w); setPage(1); }}
+          active={sort === "relevance"}
+        />
+
         <p>{result ? `${result.found} results` : "Loading…"}</p>
-        <ProductGrid hits={result?.hits ?? []} />
+        <ProductGrid hits={result?.hits ?? []} showScore={sort === "relevance"} />
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
           <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
           <span>Page {page} / {totalPages}</span>
           <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function WeightedScorePanel({
+  textWeight,
+  popWeight,
+  onText,
+  onPop,
+  active,
+}: {
+  textWeight: number;
+  popWeight: number;
+  onText: (w: number) => void;
+  onPop: (w: number) => void;
+  active: boolean;
+}) {
+  const slider = (label: string, value: number, on: (w: number) => void) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+      <span style={{ width: 130 }}>{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={3}
+        step={0.5}
+        value={value}
+        onChange={(e) => on(Number(e.target.value))}
+      />
+      <span style={{ width: 24, textAlign: "right" }}>{value}</span>
+    </label>
+  );
+  return (
+    <div
+      style={{
+        margin: "12px 0",
+        padding: 12,
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        background: "#fafafa",
+        maxWidth: 360,
+        opacity: active ? 1 : 0.5,
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>Weighted score (rankBy)</div>
+      {slider("Relevance weight", textWeight, onText)}
+      {slider("Popularity weight", popWeight, onPop)}
+      <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+        score = {textWeight}·text_match + {popWeight}·popularity
+        {active ? "" : " — switch Sort to “Relevance” to see this ordering"}
       </div>
     </div>
   );

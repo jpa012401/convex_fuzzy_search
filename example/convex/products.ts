@@ -6,13 +6,15 @@ import { FuzzySearch } from "@elevatech/fuzzy-search";
 const search = new FuzzySearch(components.fuzzySearch);
 const COLLECTION = "products";
 
+// `popularity` is deliberately uncorrelated with price/relevance so the weighted
+// blend (rankBy) visibly reorders results when you crank its weight.
 const SAMPLE = [
-  { id: "1", name: "Aurora Running Shoe", description: "lightweight road running shoe", brand: "Aurora", category: "Shoes", price: 89, image: "https://picsum.photos/seed/1/300" },
-  { id: "2", name: "Aurora Trail Shoe", description: "grippy off-road trail shoe", brand: "Aurora", category: "Shoes", price: 109, image: "https://picsum.photos/seed/2/300" },
-  { id: "3", name: "Nimbus Rain Jacket", description: "waterproof breathable jacket", brand: "Nimbus", category: "Outerwear", price: 149, image: "https://picsum.photos/seed/3/300" },
-  { id: "4", name: "Nimbus Wool Hat", description: "warm merino wool hat", brand: "Nimbus", category: "Accessories", price: 29, image: "https://picsum.photos/seed/4/300" },
-  { id: "5", name: "Vertex Yoga Mat", description: "non slip cushioned yoga mat", brand: "Vertex", category: "Fitness", price: 39, image: "https://picsum.photos/seed/5/300" },
-  { id: "6", name: "Vertex Water Bottle", description: "insulated stainless steel bottle", brand: "Vertex", category: "Fitness", price: 25, image: "https://picsum.photos/seed/6/300" },
+  { id: "1", name: "Aurora Running Shoe", description: "lightweight road running shoe", brand: "Aurora", category: "Shoes", price: 89, popularity: 50, image: "https://picsum.photos/seed/1/300" },
+  { id: "2", name: "Aurora Trail Shoe", description: "grippy off-road trail shoe", brand: "Aurora", category: "Shoes", price: 109, popularity: 10, image: "https://picsum.photos/seed/2/300" },
+  { id: "3", name: "Nimbus Rain Jacket", description: "waterproof breathable jacket", brand: "Nimbus", category: "Outerwear", price: 149, popularity: 95, image: "https://picsum.photos/seed/3/300" },
+  { id: "4", name: "Nimbus Wool Hat", description: "warm merino wool hat", brand: "Nimbus", category: "Accessories", price: 29, popularity: 80, image: "https://picsum.photos/seed/4/300" },
+  { id: "5", name: "Vertex Yoga Mat", description: "non slip cushioned yoga mat", brand: "Vertex", category: "Fitness", price: 39, popularity: 30, image: "https://picsum.photos/seed/5/300" },
+  { id: "6", name: "Vertex Water Bottle", description: "insulated stainless steel bottle", brand: "Vertex", category: "Fitness", price: 25, popularity: 99, image: "https://picsum.photos/seed/6/300" },
 ];
 
 export const seed = mutation({
@@ -53,6 +55,14 @@ export const searchProducts = query({
           order: v.union(v.literal("asc"), v.literal("desc")),
         }),
       ),
+    ),
+    rankBy: v.optional(
+      v.object({
+        text: v.optional(v.number()),
+        fields: v.optional(
+          v.array(v.object({ field: v.string(), weight: v.number() })),
+        ),
+      }),
     ),
   },
   handler: async (ctx, args) =>
