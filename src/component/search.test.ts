@@ -273,4 +273,26 @@ describe("highlighting + weighted sort", () => {
     });
     expect(r.hits.map((h: any) => h.document.id)).toEqual(["1", "2", "3"]);
   });
+
+  it("rankBy composes with a _text_match sortBy key (uses the blended score)", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, {
+      collection: "shop",
+      q: "running",
+      rankBy: { text: 1, fields: [{ field: "popularity", weight: 1 }] },
+      sortBy: [{ field: "_text_match", order: "desc" }],
+    });
+    expect(r.hits[0].document.id).toBe("2"); // blended score (popularity) drives _text_match key
+  });
+
+  it("rankBy text:0 sorts purely by the weighted field", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, {
+      collection: "shop",
+      q: "running",
+      rankBy: { text: 0, fields: [{ field: "popularity", weight: 1 }] },
+    });
+    // only the two "running" docs match; ordered by popularity (100 > 1)
+    expect(r.hits.map((h: any) => h.document.id)).toEqual(["2", "1"]);
+  });
 });
