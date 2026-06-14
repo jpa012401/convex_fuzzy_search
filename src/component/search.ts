@@ -9,6 +9,7 @@ import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
 import { collectionCount, pageDocIds } from "./counters";
 import { readFacetCounts } from "./facetCounts";
+import { specMatches, canonicalSpecId, pageSortedDocIds } from "./sortIndex";
 import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
@@ -85,9 +86,10 @@ export const search = query({
     const tokens = tokenize(args.q);
     const hasFilter = !!(args.filterBy && args.filterBy.trim() !== "");
     const hasFacets = !!(args.facetBy && args.facetBy.length > 0);
-    const hasCustomOrder =
-      (!!args.sortBy && args.sortBy.length > 0) ||
-      (!!args.rankBy && ((args.rankBy.fields?.length ?? 0) > 0 || args.rankBy.text !== undefined));
+    const hasSortBy = !!args.sortBy && args.sortBy.length > 0;
+    const hasRankBy =
+      !!args.rankBy && ((args.rankBy.fields?.length ?? 0) > 0 || args.rankBy.text !== undefined);
+    const hasCustomOrder = hasSortBy || hasRankBy;
 
     // ---- LEAN BROWSE: empty q, no filter/facets/custom order -> page off the aggregate.
     if (tokens.length === 0 && !hasFilter && !hasFacets && !hasCustomOrder) {
@@ -120,6 +122,38 @@ export const search = query({
         facet_counts.push({ field_name: field, counts });
       }
       return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+    }
+
+    // ---- LEAN BROWSE + SORT: empty q, no filter, no rankBy, and sortBy matches
+    // a declared spec -> page off the sort-index aggregate (no full-collection load).
+    if (tokens.length === 0 && !hasFilter && hasSortBy && !hasRankBy) {
+      const spec = specMatches(args.sortBy, collection.sortSpecs ?? []);
+      if (spec) {
+        const ids = await pageSortedDocIds(
+          ctx,
+          args.collection,
+          canonicalSpecId(spec),
+          (page - 1) * perPage,
+          perPage,
+        );
+        const byId = await loadDocs(ctx, args.collection, ids);
+        const hits: Hit[] = ids.map((id) => ({
+          document: (byId.get(id) ?? {}) as Record<string, unknown>,
+          highlight: {},
+          text_match: 0,
+        }));
+        const facet_counts: FacetCount[] = [];
+        if (hasFacets) {
+          const declared = new Set(collection.facetFields ?? []);
+          const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+          for (const field of args.facetBy as string[]) {
+            if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
+            const counts = await readFacetCounts(ctx, args.collection, field, maxValues);
+            facet_counts.push({ field_name: field, counts });
+          }
+        }
+        return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+      }
     }
 
     // ---- Resolve filter to a docId set via the index (S2), if present.
