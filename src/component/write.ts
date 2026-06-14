@@ -32,6 +32,14 @@ async function clearDoc(
   const oldTerms = new Set<string>(postings.map((p) => p.term));
   for (const p of postings) await ctx.db.delete(p._id);
 
+  const filt = await ctx.db
+    .query("filters")
+    .withIndex("by_doc", (q) =>
+      q.eq("collection", collection).eq("docId", docId),
+    )
+    .collect();
+  for (const r of filt) await ctx.db.delete(r._id);
+
   const existing = await ctx.db
     .query("documents")
     .withIndex("by_collection_doc", (q) =>
@@ -71,6 +79,29 @@ async function upsertInternal(
     docId: id,
     stored: project(doc, col.storedFields),
   });
+
+  for (const f of col.filterFields ?? []) {
+    const value = doc[f.field];
+    if (value === undefined || value === null) continue;
+    if (f.type === "string") {
+      await ctx.db.insert("filters", {
+        collection,
+        field: f.field,
+        docId: id,
+        strVal: String(value),
+      });
+    } else {
+      const num = Number(value);
+      if (!Number.isNaN(num)) {
+        await ctx.db.insert("filters", {
+          collection,
+          field: f.field,
+          docId: id,
+          numVal: num,
+        });
+      }
+    }
+  }
 
   await applyTermDiff(ctx, collection, oldTerms, newTerms);
   if (!existed) await addDoc(ctx, collection, id);

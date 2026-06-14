@@ -90,6 +90,11 @@ export const deleteCollection = mutation({
         .collect();
       for (const r of rows) await ctx.db.delete(r._id);
     }
+    const filterRows = await ctx.db
+      .query("filters")
+      .withIndex("by_doc", (q) => q.eq("collection", args.name))
+      .collect();
+    for (const r of filterRows) await ctx.db.delete(r._id);
     await clearCollectionCount(ctx, args.name);
     await ctx.db.delete(c._id);
   },
