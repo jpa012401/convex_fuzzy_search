@@ -48,6 +48,18 @@ export class FuzzySearch {
       filterFields?: { field: string; type: "string" | "number" }[];
       facetFields?: string[];
       sortSpecs?: { field: string; order: "asc" | "desc" }[][];
+      rankProfiles?: Record<string, {
+        base: string;
+        window?: number;
+        terms: Array<
+          | { id: string; type: "field"; weight: number; field: string }
+          | { id: string; type: "flag"; weight: number; field: string; equals?: string }
+          | { id: string; type: "setBoost"; weight: number; field: string; setKey: string }
+          | { id: string; type: "recencyDecay"; weight: number; field: string; halfLifeMs: number }
+          | { id: string; type: "geoDistance"; weight: number; latField: string; lngField: string; maxKm: number }
+          | { id: string; type: "relevance"; weight: number }
+        >;
+      }>;
     },
   ) {
     return ctx.runMutation(this.component.collections.createCollection, args);
@@ -155,6 +167,11 @@ export class FuzzySearch {
       maxFacetValues?: number;
       rankBy?: { text?: number; fields?: { field: string; weight: number }[] };
       sortBy?: { field: string; order: "asc" | "desc" }[];
+      rank?: {
+        profile: string;
+        weights?: Record<string, number>;
+        context?: { now?: number; origin?: { lat: number; lng: number }; sets?: Record<string, string[]> };
+      };
     },
   ): Promise<SearchResult> {
     return ctx.runQuery(this.component.search.search, args);

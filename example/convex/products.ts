@@ -29,7 +29,22 @@ const FACET_FIELDS = ["brand", "category", "subcategory", "inStock"];
 export const SORT_SPECS = [
   [{ field: "price", order: "asc" as const }],
   [{ field: "price", order: "desc" as const }],
+  [{ field: "popularity", order: "desc" as const }],
 ];
+
+// A rank profile for the storefront: boost popularity + affinity + preferred
+// categories, re-ranking a window taken off the popularity base order.
+export const RANK_PROFILES = {
+  boosted: {
+    base: "popularity:desc",
+    window: 200,
+    terms: [
+      { id: "pop", type: "field" as const, weight: 0.001, field: "popularity" },
+      { id: "aff", type: "field" as const, weight: 1, field: "affinity" },
+      { id: "pref", type: "setBoost" as const, weight: 5, field: "category", setKey: "prefCats" },
+    ],
+  },
+};
 
 async function createProductsCollection(ctx: any) {
   await search.createCollection(ctx, {
@@ -39,6 +54,7 @@ async function createProductsCollection(ctx: any) {
     filterFields: FILTER_FIELDS,
     facetFields: FACET_FIELDS,
     sortSpecs: SORT_SPECS,
+    rankProfiles: RANK_PROFILES,
   });
 }
 
@@ -258,6 +274,19 @@ export const searchProducts = query({
         text: v.optional(v.number()),
         fields: v.optional(
           v.array(v.object({ field: v.string(), weight: v.number() })),
+        ),
+      }),
+    ),
+    rank: v.optional(
+      v.object({
+        profile: v.string(),
+        weights: v.optional(v.record(v.string(), v.number())),
+        context: v.optional(
+          v.object({
+            now: v.optional(v.number()),
+            origin: v.optional(v.object({ lat: v.number(), lng: v.number() })),
+            sets: v.optional(v.record(v.string(), v.array(v.string()))),
+          }),
         ),
       }),
     ),
