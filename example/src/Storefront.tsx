@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { SearchBar } from "./components/SearchBar";
@@ -30,17 +30,6 @@ export function Storefront() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [sort, setSort] = useState<SortKeyName>("relevance");
-  // Weighted-score (rankBy) controls: blend relevance with the `popularity` field.
-  const [textWeight, setTextWeight] = useState(1);
-  const [popWeight, setPopWeight] = useState(0);
-  const [affWeight, setAffWeight] = useState(0);
-  // Instant (re-seed-free) category boost via stored cat_<Category> fields.
-  const [boostCats, setBoostCats] = useState<string[]>([]);
-  const [catWeight, setCatWeight] = useState(0);
-  // Master switch for weighted ranking. When OFF, no `rankBy` is sent, so an
-  // unfiltered browse stays on the lean (counter-paged) path instead of the
-  // full-collection load that a live weighted blend requires.
-  const [rankEnabled, setRankEnabled] = useState(false);
   // Lean rank PROFILE ("boosted"): re-ranks a bounded top-N window off the
   // popularity base order, boosting popularity + affinity + the preferred
   // categories passed as query-time context. No full-collection load.
@@ -68,24 +57,11 @@ export function Storefront() {
   };
 
   const filterBy = buildFilterBy(selected);
-  // The lean rank profile ("boosted") wins when enabled: re-ranks a top-N window
-  // off the popularity sort index, boosting the preferred categories via context.
+  // The lean rank profile re-ranks a top-N window off the popularity sort index,
+  // boosting the preferred categories via query-time context. No full load.
   const rank = boostEnabled
     ? { profile: "boosted" as const, context: { sets: { prefCats } } }
     : undefined;
-  // Only send rankBy when its switch is on, the profile is OFF, and there is no
-  // explicit sortBy — otherwise omit it so the query stays on a lean path.
-  const rankBy =
-    !boostEnabled && rankEnabled && !SORTS[sort]
-      ? {
-          text: textWeight,
-          fields: [
-            { field: "popularity", weight: popWeight },
-            { field: "affinity", weight: affWeight },
-            ...boostCats.map((c) => ({ field: `cat_${c}`, weight: catWeight })),
-          ],
-        }
-      : undefined;
   const result = useQuery(api.products.searchProducts, {
     q,
     page,
@@ -93,7 +69,6 @@ export function Storefront() {
     filterBy,
     facetBy: ["brand", "category"],
     sortBy: SORTS[sort],
-    rankBy,
     rank,
   });
 
@@ -122,19 +97,8 @@ export function Storefront() {
           <button onClick={() => seed()}>Seed 6</button>
           <button onClick={onLoad5k}>Load 5k</button>
           <label
-            title="When off, no rankBy is sent — unfiltered browse stays on the fast indexed path. Turn on to apply weighted/preference ranking (loads the full collection)."
+            title="Lean rank profile: re-ranks a top-N window off the popularity sort index, boosting your preferred categories. No full-collection load."
             style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginLeft: "auto" }}
-          >
-            <input
-              type="checkbox"
-              checked={rankEnabled}
-              onChange={(e) => { setRankEnabled(e.target.checked); setPage(1); }}
-            />
-            Weighted ranking
-          </label>
-          <label
-            title="Lean rank profile: re-ranks a top-N window off the popularity sort index, boosting your preferred categories. No full-collection load. Overrides weighted ranking."
-            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}
           >
             <input
               type="checkbox"
@@ -146,33 +110,15 @@ export function Storefront() {
         </div>
         {loadMsg && <p style={{ fontSize: 13, color: "#888" }}>{loadMsg}</p>}
 
-        <IndexStats stats={indexStats} />
-
-        <PreferencesEditor profile={profile} onSave={onSavePrefs} status={prefsMsg} />
-
-        <WeightedScorePanel
-          textWeight={textWeight}
-          popWeight={popWeight}
-          affWeight={affWeight}
-          onText={(w) => { setTextWeight(w); setPage(1); }}
-          onPop={(w) => { setPopWeight(w); setPage(1); }}
-          onAff={(w) => { setAffWeight(w); setPage(1); }}
-          active={rankEnabled && sort === "relevance"}
-        />
-
-        <InstantCategoryBoost
-          selected={boostCats}
-          weight={catWeight}
-          onToggle={(c) => { setBoostCats((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c])); setPage(1); }}
-          onWeight={(w) => { setCatWeight(w); setPage(1); }}
-          active={rankEnabled && sort === "relevance"}
-        />
-
-        <LeanBoostPanel
-          active={boostEnabled}
-          prefCats={prefCats}
-          onToggle={(c) => { setPrefCats((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c])); setPage(1); }}
-        />
+        <Collapsible summary="Demo controls & diagnostics">
+          <PreferencesEditor profile={profile} onSave={onSavePrefs} status={prefsMsg} />
+          <LeanBoostPanel
+            active={boostEnabled}
+            prefCats={prefCats}
+            onToggle={(c) => { setPrefCats((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c])); setPage(1); }}
+          />
+          <IndexStats stats={indexStats} />
+        </Collapsible>
 
         <p>
           {result
@@ -192,9 +138,20 @@ export function Storefront() {
   );
 }
 
+// A simple collapsible section (collapsed by default) to keep the demo controls
+// out of the way until needed.
+function Collapsible({ summary, children }: { summary: string; children: ReactNode }) {
+  return (
+    <details style={{ margin: "12px 0", maxWidth: 560 }}>
+      <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#444" }}>{summary}</summary>
+      <div style={{ marginTop: 8 }}>{children}</div>
+    </details>
+  );
+}
+
 // Lean rank-profile control: pick preferred categories that the "boosted"
 // profile floats up, re-ranking a top-N window off the popularity sort index
-// (no full-collection load). Overrides the weighted-ranking panel when on.
+// (no full-collection load).
 function LeanBoostPanel({
   active,
   prefCats,
@@ -213,7 +170,6 @@ function LeanBoostPanel({
         borderRadius: 8,
         background: "#fafafa",
         color: "#222",
-        maxWidth: 560,
         opacity: active ? 1 : 0.5,
       }}
     >
@@ -236,7 +192,7 @@ function LeanBoostPanel({
       <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>
         {active
           ? "On — toggle “Lean boost profile” in the toolbar to switch off."
-          : "Off — enable “Lean boost profile” in the toolbar. Needs the Load 5k dataset and a collection created with the profile."}
+          : "Off — enable “Lean boost profile” in the toolbar. Needs the Load 5k dataset."}
       </div>
     </div>
   );
@@ -244,7 +200,7 @@ function LeanBoostPanel({
 
 // Validation panel: live counts held in the component's aggregate/counter
 // stores. For a fully-backfilled collection every facet `total` and every
-// sort-spec `count` equals `out_of`; a mismatch is flagged (needs backfill).
+// sort-spec `count` equals `out_of`; a mismatch is flagged.
 function IndexStats({
   stats,
 }: {
@@ -258,9 +214,8 @@ function IndexStats({
 }) {
   if (!stats) return null;
   // Sort specs MUST equal out_of (every doc is indexed in every spec). A facet
-  // total is the number of docs that HAVE that field, which can legitimately be
-  // ≤ out_of for a sparse field — so it's only flagged when it's 0 (likely not
-  // backfilled / never written), never for a partial count.
+  // total counts only docs that HAVE the field, so a partial total is normal for
+  // a sparse field; only an empty (0) total is flagged.
   const sortMark = (n: number) =>
     n === stats.out_of
       ? <span style={{ color: "#2e7d32" }}>✓</span>
@@ -279,7 +234,6 @@ function IndexStats({
         borderRadius: 8,
         background: "#fafafa",
         color: "#222",
-        maxWidth: 560,
       }}
     >
       <div style={{ fontWeight: 600, marginBottom: 6 }}>
@@ -310,117 +264,6 @@ function IndexStats({
         Facet totals count only docs that HAVE the field, so a partial total is
         normal for a sparse field; an empty (0) total usually means it was never
         written or needs a backfill.
-      </div>
-    </div>
-  );
-}
-
-function InstantCategoryBoost({
-  selected,
-  weight,
-  onToggle,
-  onWeight,
-  active,
-}: {
-  selected: string[];
-  weight: number;
-  onToggle: (c: string) => void;
-  onWeight: (w: number) => void;
-  active: boolean;
-}) {
-  return (
-    <div
-      style={{
-        margin: "12px 0",
-        padding: 12,
-        border: "1px solid #ddd",
-        borderRadius: 8,
-        background: "#fafafa",
-        color: "#222",
-        maxWidth: 560,
-        opacity: active ? 1 : 0.5,
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>
-        Instant category boost (no re-seed)
-      </div>
-      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8 }}>
-        <span style={{ width: 130 }}>Boost weight</span>
-        <input type="range" min={0} max={5} step={0.5} value={weight} onChange={(e) => onWeight(Number(e.target.value))} />
-        <span style={{ width: 24, textAlign: "right" }}>{weight}</span>
-      </label>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px" }}>
-        {CATEGORY_OPTIONS.map((c) => (
-          <label key={c} style={{ fontSize: 13, display: "flex", gap: 4, alignItems: "center" }}>
-            <input type="checkbox" checked={selected.includes(c)} onChange={() => onToggle(c)} />
-            {c}
-          </label>
-        ))}
-      </div>
-      <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>
-        Boosts via stored <code>cat_&lt;Category&gt;</code> fields — applies live, no
-        re-seed. Needs the <strong>Load 5k</strong> dataset.
-        {active ? "" : " Switch Sort to “Relevance” to see it."}
-      </div>
-    </div>
-  );
-}
-
-function WeightedScorePanel({
-  textWeight,
-  popWeight,
-  affWeight,
-  onText,
-  onPop,
-  onAff,
-  active,
-}: {
-  textWeight: number;
-  popWeight: number;
-  affWeight: number;
-  onText: (w: number) => void;
-  onPop: (w: number) => void;
-  onAff: (w: number) => void;
-  active: boolean;
-}) {
-  const slider = (label: string, value: number, on: (w: number) => void) => (
-    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-      <span style={{ width: 130 }}>{label}</span>
-      <input
-        type="range"
-        min={0}
-        max={3}
-        step={0.5}
-        value={value}
-        onChange={(e) => on(Number(e.target.value))}
-      />
-      <span style={{ width: 24, textAlign: "right" }}>{value}</span>
-    </label>
-  );
-  return (
-    <div
-      style={{
-        margin: "12px 0",
-        padding: 12,
-        border: "1px solid #ddd",
-        borderRadius: 8,
-        background: "#fafafa",
-        color: "#222",
-        maxWidth: 360,
-        opacity: active ? 1 : 0.5,
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>Weighted score (rankBy)</div>
-      {slider("Relevance weight", textWeight, onText)}
-      {slider("Popularity weight", popWeight, onPop)}
-      {slider("Affinity (personalize)", affWeight, onAff)}
-      <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-        score = {textWeight}·text_match + {popWeight}·popularity + {affWeight}·affinity
-        {active ? "" : " — switch Sort to “Relevance” to see this ordering"}
-      </div>
-      <div style={{ fontSize: 11, color: "#999", marginTop: 4 }}>
-        Affinity = match to the demo user (preferred categories/brands, past
-        searches, viewed items). Needs the <strong>Load 5k</strong> dataset.
       </div>
     </div>
   );
