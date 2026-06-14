@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { convexTest } from "convex-test";
+import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "./schema";
 import { api } from "./_generated/api";
 
@@ -7,6 +8,7 @@ const modules = import.meta.glob("./**/*.ts");
 
 async function setup() {
   const t = convexTest(schema, modules);
+  registerAggregate(t, "docCount");
   await t.mutation(api.collections.createCollection, {
     name: "products",
     searchFields: ["name", "description"],
@@ -124,6 +126,7 @@ describe("typo-tolerant prefix search", () => {
 describe("filtering + faceting", () => {
   async function setupFacets() {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
       name: "shop",
       searchFields: ["name"],
@@ -203,6 +206,7 @@ describe("filtering + faceting", () => {
 describe("highlighting + weighted sort", () => {
   async function setupShop() {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
       name: "shop",
       searchFields: ["name"],

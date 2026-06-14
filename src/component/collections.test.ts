@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { convexTest } from "convex-test";
+import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "./schema";
 import { api } from "./_generated/api";
 
@@ -8,6 +9,7 @@ const modules = import.meta.glob("./**/*.ts");
 describe("collections", () => {
   it("creates and reads a collection", async () => {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
       name: "products",
       searchFields: ["name", "description"],
@@ -22,6 +24,7 @@ describe("collections", () => {
 
   it("rejects duplicate collection names", async () => {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
       name: "products",
       searchFields: ["name"],
@@ -36,6 +39,7 @@ describe("collections", () => {
 
   it("getCollection returns null for unknown name", async () => {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     expect(
       await t.query(api.collections.getCollection, { name: "nope" }),
     ).toBeNull();
@@ -43,6 +47,7 @@ describe("collections", () => {
 
   it("deleteCollection removes the collection, its documents, postings, terms, and trigrams", async () => {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
       name: "products",
       searchFields: ["name"],
@@ -85,6 +90,7 @@ describe("collections", () => {
 describe("filter/facet field config", () => {
   it("stores filterFields and facetFields", async () => {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
       name: "products",
       searchFields: ["name"],
@@ -107,6 +113,7 @@ describe("filter/facet field config", () => {
 
   it("rejects filter/facet fields not covered by a storedFields projection", async () => {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await expect(
       t.mutation(api.collections.createCollection, {
         name: "products",

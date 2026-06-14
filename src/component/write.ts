@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
 import { applyTermDiff } from "./terms";
+import { addDoc, removeDoc } from "./counters";
 
 type Doc = Record<string, unknown>;
 
@@ -21,7 +22,7 @@ async function clearDoc(
   ctx: MutationCtx,
   collection: string,
   docId: string,
-): Promise<Set<string>> {
+): Promise<{ oldTerms: Set<string>; existed: boolean }> {
   const postings = await ctx.db
     .query("postings")
     .withIndex("by_collection_doc", (q) =>
@@ -39,7 +40,7 @@ async function clearDoc(
     .unique();
   if (existing) await ctx.db.delete(existing._id);
 
-  return oldTerms;
+  return { oldTerms, existed: existing !== null };
 }
 
 async function upsertInternal(
@@ -49,7 +50,7 @@ async function upsertInternal(
   doc: Doc,
 ) {
   const col = await requireCollection(ctx, collection);
-  const oldTerms = await clearDoc(ctx, collection, id);
+  const { oldTerms, existed } = await clearDoc(ctx, collection, id);
 
   const newTerms = new Set<string>();
   for (const field of col.searchFields) {
@@ -72,6 +73,7 @@ async function upsertInternal(
   });
 
   await applyTermDiff(ctx, collection, oldTerms, newTerms);
+  if (!existed) await addDoc(ctx, collection, id);
 }
 
 export const upsert = mutation({
@@ -84,8 +86,9 @@ export const deleteDoc = mutation({
   args: { collection: v.string(), id: v.string() },
   handler: async (ctx, args) => {
     await requireCollection(ctx, args.collection);
-    const oldTerms = await clearDoc(ctx, args.collection, args.id);
+    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id);
     await applyTermDiff(ctx, args.collection, oldTerms, new Set());
+    if (existed) await removeDoc(ctx, args.collection, args.id);
   },
 });
 

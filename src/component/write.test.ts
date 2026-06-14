@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { convexTest } from "convex-test";
+import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "./schema";
 import { api } from "./_generated/api";
 
@@ -7,6 +8,7 @@ const modules = import.meta.glob("./**/*.ts");
 
 async function setup() {
   const t = convexTest(schema, modules);
+  registerAggregate(t, "docCount");
   await t.mutation(api.collections.createCollection, {
     name: "products",
     searchFields: ["name", "description"],
@@ -77,6 +79,7 @@ describe("write path", () => {
 
   it("upsert on unknown collection throws CollectionNotFound", async () => {
     const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
     await expect(
       t.mutation(api.write.upsert, { collection: "nope", id: "p1", doc: {} }),
     ).rejects.toThrow(/CollectionNotFound/);
