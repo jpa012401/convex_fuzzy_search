@@ -3,7 +3,7 @@ import { convexTest } from "convex-test";
 import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "./schema";
 import { api } from "./_generated/api";
-import { pageSortedDocIds } from "./sortIndex";
+import { pageSortedDocIds, pageSortedDocIdsRange } from "./sortIndex";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -80,6 +80,17 @@ describe("write path maintains sort index", () => {
     expect(await pageAsc(t)).toEqual(["z2", "z1"]);
     await runBackfill(); // insertIfDoesNotExist -> idempotent
     expect(await pageAsc(t)).toEqual(["z2", "z1"]);
+  });
+
+  it("pageSortedDocIdsRange reads the first N in base order in one batched scan", async () => {
+    const t = await setup();
+    for (let i = 0; i < 6; i++) {
+      await t.mutation(api.write.upsert, { collection: "shop", id: `p${i}`, doc: { name: `p${i}`, price: i * 10 } });
+    }
+    const ids = await t.run((ctx: any) => pageSortedDocIdsRange(ctx, "shop", "price:asc", 4));
+    expect(ids).toEqual(["p0", "p1", "p2", "p3"]); // cheapest 4, in order
+    const all = await t.run((ctx: any) => pageSortedDocIdsRange(ctx, "shop", "price:asc", 100));
+    expect(all.length).toBe(6); // limit beyond size returns all
   });
 
   // Regression: a string-join namespace ("collection specId") would alias

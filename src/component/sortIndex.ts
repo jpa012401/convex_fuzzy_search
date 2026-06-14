@@ -95,6 +95,24 @@ export async function pageSortedDocIds(
   return ids;
 }
 
+// First `limit` docIds of a spec namespace in base order, read as a SINGLE
+// batched range scan (aggregate `iter` with internal paging) — not `limit`
+// separate `at()` calls. Used to retrieve a re-rank window cheaply.
+export async function pageSortedDocIdsRange(
+  ctx: QueryCtx,
+  collection: string,
+  specId: string,
+  limit: number,
+): Promise<string[]> {
+  const namespace = ns(collection, specId);
+  const ids: string[] = [];
+  for await (const item of sortAgg.iter(ctx, { namespace, order: "asc", pageSize: 200 })) {
+    ids.push(item.id);
+    if (ids.length >= limit) break;
+  }
+  return ids;
+}
+
 // Number of indexed entries for one spec (validation: should equal out_of).
 export async function sortSpecCount(
   ctx: QueryCtx,
