@@ -35,10 +35,11 @@ rankProfiles?: Record<string, {
 | `field` | `field` | `weight · numField(stored, field)` |
 | `flag` | `field`, optional `equals` | `weight · (matches ? 1 : 0)` — with `equals`: `String(stored[field]) === String(equals)`; without: value is `true` / `1` / `"true"` |
 | `setBoost` | `field`, `setKey` | `weight · (String(stored[field]) ∈ context.sets[setKey] ? 1 : 0)` |
-| `recencyDecay` | `field`, `halfLifeMs` | `weight · 2^(−max(0, context.now − numField(stored, field)) / halfLifeMs)` (∈ (0,1]; future timestamps clamp to 1) |
+| `recencyDecay` | `field`, `halfLifeMs` | `weight · 2^(−max(0, context.now − numField(stored, field)) / halfLifeMs)` (∈ (0,1]; future timestamps clamp to 1). **`field` must be stored in the same unit as `context.now` (ms).** |
 | `geoDistance` | `latField`, `lngField`, `maxKm` | `weight · max(0, 1 − haversineKm(stored, context.origin) / maxKm)` (∈ [0,1]; missing coords or beyond `maxKm` → 0) |
+| `relevance` | — | `weight · text_match` (the raw relevance score of the doc for this query; `0` in browse). Lets a `q` + `rank` query blend text relevance with the other signals — the role the old `rankBy.text` played. |
 
-Score = Σ term contributions. All field access uses `numField` (NaN/missing → 0) except `flag`/`setBoost` which stringify. `numField` is the existing `ranking.ts` helper.
+Score = Σ term contributions. All field access uses `numField` (NaN/missing → 0) except `flag`/`setBoost` which stringify. `numField` is the existing `ranking.ts` helper. The `relevance` term reads the per-doc text-match score the search path already computed.
 
 **Validation (at `createCollection`):** `base` must equal a declared `sortSpecs` canonical id; every term's `field`/`latField`/`lngField` must be in `storedFields` (when projecting); `window` is clamped to `[1, MAX_RERANK_WINDOW]`; duplicate term `id`s rejected; `setBoost` requires `setKey`, `geoDistance` requires `latField`+`lngField`+`maxKm`, `recencyDecay` requires `halfLifeMs > 0`.
 
@@ -63,12 +64,14 @@ rank?: {
 
 ## Candidate set + flow
 
-The blend always runs over a **bounded** candidate set; how it's bounded depends on the query:
+The blend always runs over a **bounded** candidate set; how it's bounded depends on the query. `base` is used **only** to select and order the browse window — it is ignored when text/filter already bounds the candidate set.
 
-- **Browse (`rank` present, no `filterBy`, no text):** retrieve the top-`window` docIds off the `base` sortSpec via `pageSortedDocIds(base, 0, window)` (indexed `at()`), load only those.
-- **Filtered / text (`rank` present with `filterBy` and/or `q`):** the candidate set is the existing matched/filtered id set (already bounded by S2/S5). It is capped at `window`; if it exceeds the cap, the first `window` (in the path's natural order) are taken and the result is flagged partial.
+- **Browse (`rank` present, no `filterBy`, no text):** retrieve the top-`window` docIds off the `base` sortSpec, load only those.
+  - **Efficient retrieval (required):** the window must be read as a **single batched range scan** of the sort-index aggregate, NOT `window` separate `at(offset+i)` calls. Per-item `at()` is O(window·log n) sequential cross-component round-trips — the same per-row slowness diagnosed in plain pagination, multiplied by the window. A `window` of 1000 done with per-item `at()` would be pathologically slow. This feature therefore depends on (or includes) a batched aggregate page read (`paginate`/iterator over the ordered range). The default `window` is kept modest (**200**) and `MAX_RERANK_WINDOW` conservative (**1000**) for this reason.
+- **Text (`rank` + `q`, with or without filter):** the candidate set is the text-matched id set (already bounded by S5), in **relevance order**. Capped at `window` (top-relevance first); flagged partial if it exceeds the cap. Docs are already loaded by the text path — no separate window retrieval.
+- **Filter-only (`rank` + `filterBy`, no text):** the candidate set is the matched id set (bounded by S2). It is an **unordered** set, so capping is only well-defined when it fits: **if the matched set ≤ `window`, re-rank it exactly**; if it exceeds `window`, an arbitrary `window` subset is taken and the result is flagged partial (`reranked: false`). Callers who combine a broad filter with `rank` should keep the filter selective enough that matches ≤ `window`, or accept the partial flag.
 
-Then: load the candidate docs, compute the blend per doc, sort by **score desc**, tie-break by **base-order index** (browse) or **docId** (filtered/text), slice the requested page.
+Then: load the candidate docs (browse only; text/filter reuse the path's existing load), compute the blend per doc, sort by **score desc**, tie-break by **base-order index** (browse) or **docId** (text/filter), slice the requested page.
 
 ### Pagination + the `reranked` flag
 
@@ -85,10 +88,11 @@ Then: load the candidate docs, compute the blend per doc, sort by **score desc**
 
 - **`src/component/score.ts`** (new) — the term DSL: `RankTerm` types, `evalTerms(stored, terms, weights, context): number`, the per-type evaluators, `haversineKm`, `recencyDecay`. Pure, unit-tested.
 - **`schema.ts` / `collections.ts`** — `rankProfiles` column + `createCollection` arg + validation.
-- **`search.ts`** — new branch when `args.rank` is present: resolve profile (+ overrides), build the candidate set (window off base order for browse, or the matched set for filtered/text), `evalTerms` each, sort, page; set `reranked`. Reuses S3 facet counters and S4 `pageSortedDocIds`.
+- **`sortIndex.ts`** — add a **batched** window read (e.g. `pageSortedDocIdsRange`) that returns the first `window` ids of a spec namespace in one range scan/iterator, instead of `window` separate `at()` calls. (The existing per-item `pageSortedDocIds` stays for small `perPage` pages.)
+- **`search.ts`** — new branch when `args.rank` is present: resolve profile (+ overrides), build the candidate set (batched window off base order for browse, or the matched set for filtered/text), `evalTerms` each, sort, page; set `reranked`. Reuses S3 facet counters.
 - **`types.ts`** — add `reranked: boolean` to `SearchResult`.
 - **client + example** — `rankProfiles` in the `createCollection` types; the example declares a `jobsFeed`-style profile to demo it (or a products "boosted browse" profile over the existing fields).
-- Existing `rankBy` (in-memory full-set blend of numeric fields) is **retained** for the exact, small-collection case; `rank` profiles are the lean, configurable path. `rank` and `rankBy` are mutually exclusive on a query (if both given, `rank` wins; document it).
+- Existing `rankBy` (in-memory full-set blend of numeric fields) is **retained** for the exact, small-collection case; `rank` profiles are the lean, configurable path. `rank` takes precedence over both `rankBy` and `sortBy` when more than one ordering arg is supplied on a query (both are also orderings and would conflict): if `rank` is present, `sortBy`/`rankBy` are ignored. Document this precedence.
 
 ## Error handling
 
@@ -129,9 +133,11 @@ search({ collection: "jobs", q: "", rank: {
 
 ## Testing strategy (TDD)
 
-- **`score.ts` unit:** each term type's contribution (field, flag with/without `equals`, setBoost membership, recencyDecay half-life + future-clamp, geoDistance haversine + maxKm clamp + missing coords); weight override; absent-context → 0; full `evalTerms` sum.
+- **`score.ts` unit:** each term type's contribution (field, flag with/without `equals`, setBoost membership, recencyDecay half-life + future-clamp, geoDistance haversine + maxKm clamp + missing coords, `relevance` × text_match); weight override; absent-context → 0; full `evalTerms` sum.
 - **Validation:** undeclared `base`, term field ∉ storedFields, bad/missing type params, duplicate ids, window clamp.
-- **Search (browse):** windowed re-order off the base sort matches an in-memory golden over the same window; page within window is re-ranked, page beyond window is base-ordered with `reranked:false`; `found == out_of`.
-- **Search (filtered/text):** blend applied over the bounded matched set; capped + `reranked:false` when the matched set exceeds `window`.
-- **Context-driven:** changing `origin` / `sets` / `now` changes order without re-indexing; `rank` overrides `rankBy` when both passed.
+- **Search (browse):** windowed re-order off the base sort matches an in-memory golden over the same window; the window is read with the batched range scan (assert results, and that it isn't doing per-item `at()`); page within window is re-ranked, page beyond window is base-ordered with `reranked:false`; `found == out_of`.
+- **Search (text):** `relevance` term blends text_match with other signals; candidate set is relevance-ordered; capped + `reranked:false` past `window`.
+- **Search (filter-only):** exact re-rank when matched ≤ `window`; arbitrary subset + `reranked:false` when over.
+- **Context-driven:** changing `origin` / `sets` / `now` changes order without re-indexing.
+- **Precedence:** `rank` overrides `sortBy` and `rankBy` when passed together.
 - Full existing suite stays green; `reranked` is `true` on all non-`rank` paths.
