@@ -186,6 +186,25 @@ export const backfillFilters = mutation({
   },
 });
 
+// One-time facet-count backfill driver for collections indexed before the S3
+// facet counters existed. Self-chains in the background like backfillFilters.
+// Idempotent: the component clears the collection's facet rows on the first
+// page (cursor null), so re-running from the start is safe.
+export const backfillFacets = mutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
+  handler: async (ctx, { cursor, batch }) => {
+    const r = await search.backfillFacetCountsPage(ctx, {
+      collection: COLLECTION,
+      cursor: cursor ?? null,
+      batch: batch ?? 100,
+    });
+    if (!r.done) {
+      await ctx.scheduler.runAfter(0, api.products.backfillFacets, { cursor: r.cursor, batch });
+    }
+    return r;
+  },
+});
+
 // --- query wrapper ---------------------------------------------------------
 export const searchProducts = query({
   args: {

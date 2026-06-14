@@ -2,6 +2,7 @@ import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { addDoc } from "./counters";
 import { requireCollection } from "./collections";
+import { incrementFacet, clearCollectionFacets } from "./facetCounts";
 
 // Backfill the doc counter for a collection, one bounded page at a time.
 // Returns the next cursor (null when done). Idempotent (addDoc uses
@@ -94,6 +95,47 @@ export const backfillFiltersPage = mutation({
             });
           }
         }
+      }
+    }
+    const done = page.length <= batch;
+    return { cursor: done ? null : rows[rows.length - 1].docId, done };
+  },
+});
+
+// Backfill (rebuild) the `facetCounts` rows for a collection, one bounded page
+// at a time. Re-derives each doc's declared facet values from its `stored`
+// snapshot and increments the counters. Idempotent via clear-then-rebuild: on
+// the first page (cursor === null) it clears the collection's existing facet
+// rows, so a full run from the start is safe to repeat. For deployments that
+// indexed documents before the S3 facet counters existed (the write path now
+// maintains these automatically). Same manual cursor paging as the others.
+export const backfillFacetCountsPage = mutation({
+  args: {
+    collection: v.string(),
+    cursor: v.optional(v.union(v.string(), v.null())),
+    batch: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const col = await requireCollection(ctx, args.collection);
+    const batch = args.batch ?? 100;
+    const cursor = args.cursor ?? null;
+    // First page clears existing counts so the whole run is idempotent.
+    if (cursor === null) await clearCollectionFacets(ctx, args.collection);
+    const page = await ctx.db
+      .query("documents")
+      .withIndex("by_collection_doc", (q) =>
+        cursor === null
+          ? q.eq("collection", args.collection)
+          : q.eq("collection", args.collection).gt("docId", cursor),
+      )
+      .take(batch + 1);
+    const rows = page.slice(0, batch);
+    for (const d of rows) {
+      const stored = d.stored as Record<string, unknown>;
+      for (const field of col.facetFields ?? []) {
+        const raw = stored[field];
+        if (raw === undefined || raw === null) continue;
+        await incrementFacet(ctx, args.collection, field, String(raw));
       }
     }
     const done = page.length <= batch;

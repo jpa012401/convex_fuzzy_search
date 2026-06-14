@@ -106,6 +106,17 @@ export class FuzzySearch {
     return ctx.runMutation(this.component.backfill.backfillFiltersPage, args);
   }
 
+  // Rebuild the facet-count rows for a collection, one bounded page at a time.
+  // Returns the next cursor (null when done). Idempotent (clear-then-rebuild on
+  // the first page), so a full run from the start is safe to re-run. For
+  // collections indexed before the S3 facet counters existed.
+  async backfillFacetCountsPage(
+    ctx: MutationCtx,
+    args: { collection: string; cursor?: string | null; batch?: number },
+  ): Promise<{ cursor: string | null; done: boolean }> {
+    return ctx.runMutation(this.component.backfill.backfillFacetCountsPage, args);
+  }
+
   async search(
     ctx: QueryCtx,
     args: {
