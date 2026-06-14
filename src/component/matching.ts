@@ -10,17 +10,17 @@ const typoScore = (d: number) => 2 - 0.5 * d;
 // High code point used as an exclusive upper bound for a prefix range scan.
 const HIGH = "￿";
 
-// Returns a map of candidate term -> best match score for one query token.
+// Returns a map of candidate term -> best match score and document frequency for one query token.
 export async function candidateTermsForToken(
   ctx: QueryCtx,
   collection: string,
   token: string,
   isLast: boolean,
-): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  const setBest = (term: string, score: number) => {
+): Promise<Map<string, { score: number; docCount: number }>> {
+  const out = new Map<string, { score: number; docCount: number }>();
+  const setBest = (term: string, score: number, docCount: number) => {
     const cur = out.get(term);
-    if (cur === undefined || score > cur) out.set(term, score);
+    if (cur === undefined || score > cur.score) out.set(term, { score, docCount });
   };
 
   // 1. Exact
@@ -30,7 +30,7 @@ export async function candidateTermsForToken(
       q.eq("collection", collection).eq("term", token),
     )
     .unique();
-  if (exact) setBest(token, EXACT);
+  if (exact) setBest(token, EXACT, exact.docCount);
 
   // 2. Prefix (last token only)
   if (isLast) {
@@ -40,7 +40,7 @@ export async function candidateTermsForToken(
         q.eq("collection", collection).gte("term", token).lt("term", token + HIGH),
       )
       .collect();
-    for (const r of rows) setBest(r.term, PREFIX);
+    for (const r of rows) setBest(r.term, PREFIX, r.docCount);
   }
 
   // 3. Fuzzy (trigram candidates + bounded Levenshtein)
@@ -60,9 +60,17 @@ export async function candidateTermsForToken(
     const threshold = Math.max(1, grams.length - budget * 3);
     for (const [term, count] of overlap) {
       if (count < threshold) continue;
-      if (out.get(term) === EXACT) continue;
+      if (out.get(term)?.score === EXACT) continue;
       const d = levenshtein(token, term, budget);
-      if (d <= budget) setBest(term, typoScore(d));
+      if (d <= budget) {
+        const row = await ctx.db
+          .query("terms")
+          .withIndex("by_collection_term", (q) =>
+            q.eq("collection", collection).eq("term", term),
+          )
+          .unique();
+        setBest(term, typoScore(d), row?.docCount ?? 0);
+      }
     }
   }
 

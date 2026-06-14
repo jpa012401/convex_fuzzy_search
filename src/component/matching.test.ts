@@ -32,7 +32,8 @@ describe("candidateTermsForToken", () => {
     const m = await t.run(async (ctx: any) =>
       Object.fromEntries(await candidateTermsForToken(ctx, "products", "shoe", false)),
     );
-    expect(m["shoe"]).toBe(EXACT);
+    // "shoe" appears in 1 document (p1)
+    expect(m["shoe"]).toEqual({ score: EXACT, docCount: 1 });
   });
 
   it("prefix matches only when isLast", async () => {
@@ -41,7 +42,8 @@ describe("candidateTermsForToken", () => {
       Object.fromEntries(await candidateTermsForToken(ctx, "products", "run", true)),
     );
     expect(Object.keys(last).sort()).toEqual(["runners", "running"]);
-    expect(last["running"]).toBe(PREFIX);
+    // "running" appears in 2 documents (p1, p2); "runners" appears in 1 (p1)
+    expect(last["running"]).toEqual({ score: PREFIX, docCount: 2 });
 
     const notLast = await t.run(async (ctx: any) =>
       Object.fromEntries(await candidateTermsForToken(ctx, "products", "run", false)),
@@ -56,7 +58,9 @@ describe("candidateTermsForToken", () => {
     const m = await t.run(async (ctx: any) =>
       Object.fromEntries(await candidateTermsForToken(ctx, "products", "runing", false)),
     );
-    expect(m["running"]).toBeGreaterThan(0);
-    expect(m["running"]).toBeLessThan(EXACT);
+    // "running" appears in 2 documents (p1, p2); typo score is between 0 and EXACT
+    expect(m["running"].score).toBeGreaterThan(0);
+    expect(m["running"].score).toBeLessThan(EXACT);
+    expect(m["running"].docCount).toBe(2);
   });
 });
