@@ -8,6 +8,7 @@ import { parseFilterAst, resolveAstToDocIds } from "./filter";
 import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
 import { collectionCount, pageDocIds } from "./counters";
+import { readFacetCounts } from "./facetCounts";
 import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
@@ -98,6 +99,27 @@ export const search = query({
         text_match: 0,
       }));
       return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
+    }
+
+    // ---- LEAN BROWSE + FACETS: empty q, no filter, no custom order -> page off
+    // the aggregate and read facet counts from the write-maintained counters.
+    if (tokens.length === 0 && !hasFilter && hasFacets && !hasCustomOrder) {
+      const ids = await pageDocIds(ctx, args.collection, (page - 1) * perPage, perPage);
+      const byId = await loadDocs(ctx, args.collection, ids);
+      const hits: Hit[] = ids.map((id) => ({
+        document: (byId.get(id) ?? {}) as Record<string, unknown>,
+        highlight: {},
+        text_match: 0,
+      }));
+      const declared = new Set(collection.facetFields ?? []);
+      const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+      const facet_counts: FacetCount[] = [];
+      for (const field of args.facetBy as string[]) {
+        if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
+        const counts = await readFacetCounts(ctx, args.collection, field, maxValues);
+        facet_counts.push({ field_name: field, counts });
+      }
+      return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
     }
 
     // ---- Resolve filter to a docId set via the index (S2), if present.
