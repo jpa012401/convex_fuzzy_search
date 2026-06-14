@@ -5,6 +5,7 @@ import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
 import { applyTermDiff } from "./terms";
 import { addDoc, removeDoc } from "./counters";
+import { incrementFacet, decrementFacet } from "./facetCounts";
 
 type Doc = Record<string, unknown>;
 
@@ -22,6 +23,7 @@ async function clearDoc(
   ctx: MutationCtx,
   collection: string,
   docId: string,
+  facetFields: string[],
 ): Promise<{ oldTerms: Set<string>; existed: boolean }> {
   const postings = await ctx.db
     .query("postings")
@@ -46,7 +48,15 @@ async function clearDoc(
       q.eq("collection", collection).eq("docId", docId),
     )
     .unique();
-  if (existing) await ctx.db.delete(existing._id);
+  if (existing) {
+    const stored = existing.stored as Record<string, unknown>;
+    for (const field of facetFields) {
+      const raw = stored[field];
+      if (raw === undefined || raw === null) continue;
+      await decrementFacet(ctx, collection, field, String(raw));
+    }
+    await ctx.db.delete(existing._id);
+  }
 
   return { oldTerms, existed: existing !== null };
 }
@@ -58,7 +68,7 @@ async function upsertInternal(
   doc: Doc,
 ) {
   const col = await requireCollection(ctx, collection);
-  const { oldTerms, existed } = await clearDoc(ctx, collection, id);
+  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? []);
 
   const newTerms = new Set<string>();
   for (const field of col.searchFields) {
@@ -103,6 +113,12 @@ async function upsertInternal(
     }
   }
 
+  for (const field of col.facetFields ?? []) {
+    const raw = doc[field];
+    if (raw === undefined || raw === null) continue;
+    await incrementFacet(ctx, collection, field, String(raw));
+  }
+
   await applyTermDiff(ctx, collection, oldTerms, newTerms);
   if (!existed) await addDoc(ctx, collection, id);
 }
@@ -116,8 +132,8 @@ export const upsert = mutation({
 export const deleteDoc = mutation({
   args: { collection: v.string(), id: v.string() },
   handler: async (ctx, args) => {
-    await requireCollection(ctx, args.collection);
-    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id);
+    const col = await requireCollection(ctx, args.collection);
+    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? []);
     await applyTermDiff(ctx, args.collection, oldTerms, new Set());
     if (existed) await removeDoc(ctx, args.collection, args.id);
   },

@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { clearCollectionCount } from "./counters";
+import { clearCollectionFacets } from "./facetCounts";
 
 export async function loadCollection(ctx: QueryCtx, name: string) {
   return await ctx.db
@@ -96,6 +97,7 @@ export const deleteCollection = mutation({
       .collect();
     for (const r of filterRows) await ctx.db.delete(r._id);
     await clearCollectionCount(ctx, args.name);
+    await clearCollectionFacets(ctx, args.name);
     await ctx.db.delete(c._id);
   },
 });
