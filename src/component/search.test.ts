@@ -354,3 +354,57 @@ describe("S1 lean reads", () => {
     expect(r.found).toBe(2);
   });
 });
+
+describe("S2 indexed filtering", () => {
+  async function setupFacets() {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "shop",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [
+        { field: "brand", type: "string" },
+        { field: "price", type: "number" },
+      ],
+      facetFields: ["brand"],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "shop",
+      docs: [
+        { id: "1", doc: { name: "running shoe", brand: "Aurora", price: 90 } },
+        { id: "2", doc: { name: "trail shoe", brand: "Aurora", price: 110 } },
+        { id: "3", doc: { name: "rain jacket", brand: "Nimbus", price: 150 } },
+      ],
+    });
+    return t;
+  }
+
+  it("browse + filter returns the indexed set", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "brand:Aurora" });
+    expect(r.found).toBe(2);
+    expect(r.hits.map((h: any) => h.document.name).sort()).toEqual(["running shoe", "trail shoe"]);
+  });
+
+  it("numeric range filter via index", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "price:[100..200]" });
+    expect(r.found).toBe(2);
+  });
+
+  it("text + filter intersect via index", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "shoe", filterBy: "brand:Aurora" });
+    expect(r.found).toBe(2);
+  });
+
+  it("filter + facet still query-scoped", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "price:>100", facetBy: ["brand"] });
+    expect(r.facet_counts[0].counts).toEqual([
+      { value: "Aurora", count: 1 },
+      { value: "Nimbus", count: 1 },
+    ]);
+  });
+});

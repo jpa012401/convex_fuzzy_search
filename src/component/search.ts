@@ -4,7 +4,7 @@ import { v } from "convex/values";
 import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
 import { candidateTermsForToken } from "./matching";
-import { parseFilter } from "./filter";
+import { parseFilterAst, resolveAstToDocIds } from "./filter";
 import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
 import { collectionCount, pageDocIds } from "./counters";
@@ -100,6 +100,18 @@ export const search = query({
       return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
     }
 
+    // ---- Resolve filter to a docId set via the index (S2), if present.
+    let filterIds: Set<string> | null = null;
+    if (hasFilter) {
+      const fieldTypes: Record<string, "string" | "number"> = {};
+      for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
+      filterIds = await resolveAstToDocIds(
+        ctx,
+        args.collection,
+        parseFilterAst(args.filterBy as string, fieldTypes),
+      );
+    }
+
     // ---- Build the working set (byId) + match ids + scores.
     let matchedIds: string[];
     let scoreById: Map<string, number> | null = null;
@@ -107,7 +119,7 @@ export const search = query({
     let byId: Map<string, unknown>;
 
     if (tokens.length > 0) {
-      // TEXT PATH: candidate set from postings; load ONLY those docs.
+      // TEXT PATH: candidate set from postings; intersect with filter; load only those docs.
       const perToken: Map<string, number>[] = [];
       for (let i = 0; i < tokens.length; i++) {
         const candidates = await candidateTermsForToken(ctx, args.collection, tokens[i], i === tokens.length - 1);
@@ -127,9 +139,14 @@ export const search = query({
         }
       }
       matchedIds = [...scoreById.keys()];
+      if (filterIds) matchedIds = matchedIds.filter((id) => filterIds!.has(id));
+      byId = await loadDocs(ctx, args.collection, matchedIds);
+    } else if (filterIds) {
+      // BROWSE + FILTER: the filter set is the result set (no full-collection load).
+      matchedIds = [...filterIds];
       byId = await loadDocs(ctx, args.collection, matchedIds);
     } else {
-      // FALLBACK (browse + filter/facets/custom order): load the whole collection.
+      // BROWSE + facets/custom-order but NO filter: still full load (S3/S4 replace this).
       const allDocs = await ctx.db
         .query("documents")
         .withIndex("by_collection_doc", (q) => q.eq("collection", args.collection))
@@ -139,13 +156,6 @@ export const search = query({
     }
 
     const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
-
-    if (hasFilter) {
-      const fieldTypes: Record<string, "string" | "number"> = {};
-      for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
-      const predicate = parseFilter(args.filterBy as string, fieldTypes);
-      matchedIds = matchedIds.filter((id) => predicate(storedOf(id)));
-    }
 
     const found = matchedIds.length;
 
