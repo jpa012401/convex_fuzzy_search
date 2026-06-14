@@ -1,7 +1,7 @@
 import { defineApp } from "convex/server";
-import typesenseSearch from "@elevatech/typesense-search/convex.config.js";
+import fuzzySearch from "@elevatech/fuzzy-search/convex.config.js";
 
 const app = defineApp();
-app.use(typesenseSearch);
+app.use(fuzzySearch);
 
 export default app;

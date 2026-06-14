@@ -1,5 +1,5 @@
 import { defineComponent } from "convex/server";
 
-const component = defineComponent("typesenseSearch");
+const component = defineComponent("fuzzySearch");
 
 export default component;

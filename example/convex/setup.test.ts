@@ -2,7 +2,7 @@
 import { test } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "./schema.js";
-import component from "@elevatech/typesense-search/test";
+import component from "@elevatech/fuzzy-search/test";
 
 const modules = import.meta.glob("./**/*.*s");
 // When users want to write tests that use your component, they need to

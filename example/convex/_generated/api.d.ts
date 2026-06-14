@@ -47,5 +47,5 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  typesenseSearch: import("@elevatech/typesense-search/_generated/component.js").ComponentApi<"typesenseSearch">;
+  fuzzySearch: import("@elevatech/fuzzy-search/_generated/component.js").ComponentApi<"fuzzySearch">;
 };

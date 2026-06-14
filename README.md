@@ -1,6 +1,6 @@
-# Convex Typesense Search
+# Convex Fuzzy Search
 
-[![npm version](https://badge.fury.io/js/@elevatech%2Ftypesense-search.svg)](https://badge.fury.io/js/@elevatech%2Ftypesense-search)
+[![npm version](https://badge.fury.io/js/@elevatech%2Ffuzzy-search.svg)](https://badge.fury.io/js/@elevatech%2Ffuzzy-search)
 
 A [Convex](https://convex.dev) component providing exact, tokenized full-text
 search with [Typesense](https://typesense.org)-shaped results — entirely inside
@@ -17,7 +17,7 @@ immediately.
 > to be forward-compatible with those phases.
 
 Found a bug? Feature request?
-[File it here](https://github.com/elevatech/typesense-search/issues).
+[File it here](https://github.com/elevatech/fuzzy-search/issues).
 
 ## Features
 
@@ -62,7 +62,7 @@ Found a bug? Feature request?
 Install the package:
 
 ```sh
-npm install @elevatech/typesense-search
+npm install @elevatech/fuzzy-search
 ```
 
 Then register the component in your app's `convex/convex.config.ts`:
@@ -70,24 +70,24 @@ Then register the component in your app's `convex/convex.config.ts`:
 ```ts
 // convex/convex.config.ts
 import { defineApp } from "convex/server";
-import typesenseSearch from "@elevatech/typesense-search/convex.config";
+import fuzzySearch from "@elevatech/fuzzy-search/convex.config";
 
 const app = defineApp();
-app.use(typesenseSearch);
+app.use(fuzzySearch);
 
 export default app;
 ```
 
 ## Quick start
 
-Construct a `TypesenseSearch` client with the installed component reference,
+Construct a `FuzzySearch` client with the installed component reference,
 then call its methods from your own Convex functions.
 
 ```ts
 import { components } from "./_generated/api";
-import { TypesenseSearch } from "@elevatech/typesense-search";
+import { FuzzySearch } from "@elevatech/fuzzy-search";
 
-const search = new TypesenseSearch(components.typesenseSearch);
+const search = new FuzzySearch(components.fuzzySearch);
 ```
 
 Create a collection and insert documents from a **mutation**:

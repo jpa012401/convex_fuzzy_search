@@ -1,10 +1,10 @@
 {
-  "name": "@elevatech/typesense-search",
-  "description": "A typesense search component for Convex.",
-  "repository": "github:elevatech/typesense-search",
-  "homepage": "https://github.com/elevatech/typesense-search#readme",
+  "name": "@elevatech/fuzzy-search",
+  "description": "Fuzzy, typo-tolerant search for Convex with Typesense-style output.",
+  "repository": "github:elevatech/fuzzy-search",
+  "homepage": "https://github.com/elevatech/fuzzy-search#readme",
   "bugs": {
-    "url": "https://github.com/elevatech/typesense-search/issues"
+    "url": "https://github.com/elevatech/fuzzy-search/issues"
   },
   "version": "0.1.0",
   "license": "Apache-2.0",

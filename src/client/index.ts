@@ -8,7 +8,7 @@ import type { ComponentApi } from "../component/_generated/component.js";
 import type { SearchResult } from "../component/types.js";
 
 // See example/convex/products.ts for how to use this component.
-// The reusable ctx-type helpers below are used by the TypesenseSearch client.
+// The reusable ctx-type helpers below are used by the FuzzySearch client.
 
 export type { ComponentApi };
 export type { SearchResult } from "../component/types.js";
@@ -26,17 +26,17 @@ export type ActionCtx = Pick<
 >;
 
 /**
- * Typed client for the Typesense search component.
+ * Typed client for the Fuzzy Search component.
  *
  * Construct with the installed component reference, then call its methods
  * from your own Convex queries/mutations/actions:
  *
  * ```ts
- * const search = new TypesenseSearch(components.typesenseSearch);
+ * const search = new FuzzySearch(components.fuzzySearch);
  * await search.upsert(ctx, { collection: "books", id: "1", doc: { title: "..." } });
  * ```
  */
-export class TypesenseSearch {
+export class FuzzySearch {
   constructor(public component: ComponentApi) {}
 
   async createCollection(

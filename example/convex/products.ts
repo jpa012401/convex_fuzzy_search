@@ -1,9 +1,9 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { components } from "./_generated/api";
-import { TypesenseSearch } from "@elevatech/typesense-search";
+import { FuzzySearch } from "@elevatech/fuzzy-search";
 
-const search = new TypesenseSearch(components.typesenseSearch);
+const search = new FuzzySearch(components.fuzzySearch);
 const COLLECTION = "products";
 
 const SAMPLE = [
