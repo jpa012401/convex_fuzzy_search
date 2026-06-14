@@ -6,6 +6,8 @@ import { requireCollection } from "./collections";
 import { applyTermDiff } from "./terms";
 import { addDoc, removeDoc } from "./counters";
 import { incrementFacet, decrementFacet } from "./facetCounts";
+import { addSortEntry, removeSortEntry } from "./sortIndex";
+import type { SortKey } from "./ranking";
 
 type Doc = Record<string, unknown>;
 
@@ -24,6 +26,7 @@ async function clearDoc(
   collection: string,
   docId: string,
   facetFields: string[],
+  sortSpecs: SortKey[][],
 ): Promise<{ oldTerms: Set<string>; existed: boolean }> {
   const postings = await ctx.db
     .query("postings")
@@ -55,6 +58,9 @@ async function clearDoc(
       if (raw === undefined || raw === null) continue;
       await decrementFacet(ctx, collection, field, String(raw));
     }
+    for (const spec of sortSpecs) {
+      await removeSortEntry(ctx, collection, spec, stored, docId);
+    }
     await ctx.db.delete(existing._id);
   }
 
@@ -68,7 +74,7 @@ async function upsertInternal(
   doc: Doc,
 ) {
   const col = await requireCollection(ctx, collection);
-  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? []);
+  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? [], col.sortSpecs ?? []);
 
   const newTerms = new Set<string>();
   for (const field of col.searchFields) {
@@ -119,6 +125,10 @@ async function upsertInternal(
     await incrementFacet(ctx, collection, field, String(raw));
   }
 
+  for (const spec of col.sortSpecs ?? []) {
+    await addSortEntry(ctx, collection, spec, doc, id);
+  }
+
   await applyTermDiff(ctx, collection, oldTerms, newTerms);
   if (!existed) await addDoc(ctx, collection, id);
 }
@@ -133,7 +143,7 @@ export const deleteDoc = mutation({
   args: { collection: v.string(), id: v.string() },
   handler: async (ctx, args) => {
     const col = await requireCollection(ctx, args.collection);
-    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? []);
+    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? [], col.sortSpecs ?? []);
     await applyTermDiff(ctx, args.collection, oldTerms, new Set());
     if (existed) await removeDoc(ctx, args.collection, args.id);
   },
