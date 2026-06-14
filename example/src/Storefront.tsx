@@ -31,6 +31,7 @@ export function Storefront() {
   // Weighted-score (rankBy) controls: blend relevance with the `popularity` field.
   const [textWeight, setTextWeight] = useState(1);
   const [popWeight, setPopWeight] = useState(0);
+  const [affWeight, setAffWeight] = useState(0);
   const seed = useMutation(api.products.seed);
   const startSeed = useMutation(api.products.startSeed);
   const [loadMsg, setLoadMsg] = useState<string | null>(null);
@@ -49,7 +50,13 @@ export function Storefront() {
     filterBy,
     facetBy: ["brand", "category"],
     sortBy: SORTS[sort],
-    rankBy: { text: textWeight, fields: [{ field: "popularity", weight: popWeight }] },
+    rankBy: {
+      text: textWeight,
+      fields: [
+        { field: "popularity", weight: popWeight },
+        { field: "affinity", weight: affWeight },
+      ],
+    },
   });
 
   const totalPages = result ? Math.max(1, Math.ceil(result.found / PER_PAGE)) : 1;
@@ -82,8 +89,10 @@ export function Storefront() {
         <WeightedScorePanel
           textWeight={textWeight}
           popWeight={popWeight}
+          affWeight={affWeight}
           onText={(w) => { setTextWeight(w); setPage(1); }}
           onPop={(w) => { setPopWeight(w); setPage(1); }}
+          onAff={(w) => { setAffWeight(w); setPage(1); }}
           active={sort === "relevance"}
         />
 
@@ -102,14 +111,18 @@ export function Storefront() {
 function WeightedScorePanel({
   textWeight,
   popWeight,
+  affWeight,
   onText,
   onPop,
+  onAff,
   active,
 }: {
   textWeight: number;
   popWeight: number;
+  affWeight: number;
   onText: (w: number) => void;
   onPop: (w: number) => void;
+  onAff: (w: number) => void;
   active: boolean;
 }) {
   const slider = (label: string, value: number, on: (w: number) => void) => (
@@ -142,9 +155,14 @@ function WeightedScorePanel({
       <div style={{ fontWeight: 600, marginBottom: 6 }}>Weighted score (rankBy)</div>
       {slider("Relevance weight", textWeight, onText)}
       {slider("Popularity weight", popWeight, onPop)}
+      {slider("Affinity (personalize)", affWeight, onAff)}
       <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-        score = {textWeight}·text_match + {popWeight}·popularity
+        score = {textWeight}·text_match + {popWeight}·popularity + {affWeight}·affinity
         {active ? "" : " — switch Sort to “Relevance” to see this ordering"}
+      </div>
+      <div style={{ fontSize: 11, color: "#999", marginTop: 4 }}>
+        Affinity = match to the demo user (preferred categories/brands, past
+        searches, viewed items). Needs the <strong>Load 5k</strong> dataset.
       </div>
     </div>
   );

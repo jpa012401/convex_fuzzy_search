@@ -22,7 +22,7 @@ export function ProductGrid({ hits, showScore }: { hits: Hit[]; showScore?: bool
           <div>${h.document.price}</div>
           {showScore && (
             <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
-              popularity {h.document.popularity} · text_match {h.text_match}
+              pop {h.document.popularity ?? "—"} · aff {h.document.affinity ?? "—"} · match {h.text_match}
             </div>
           )}
         </div>
