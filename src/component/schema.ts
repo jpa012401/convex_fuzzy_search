@@ -58,4 +58,13 @@ export default defineSchema({
     .index("by_str", ["collection", "field", "strVal"])
     .index("by_num", ["collection", "field", "numVal"])
     .index("by_doc", ["collection", "docId"]),
+
+  facetCounts: defineTable({
+    collection: v.string(),
+    field: v.string(),
+    value: v.string(),
+    count: v.number(), // # docs in the collection whose stored `field` stringifies to `value`
+  })
+    .index("by_field", ["collection", "field"]) // enumerate all values for a field
+    .index("by_value", ["collection", "field", "value"]), // locate the row to ++/--
 });
