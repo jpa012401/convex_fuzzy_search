@@ -17,6 +17,10 @@ pipeline.
 > `field_value_factor`-like blend). Everything is plain Convex tables, queries,
 > and mutations — nothing leaves your deployment.
 
+**Documentation:** [Overview](./docs/overview.md) (what it is + how it works) ·
+[Usage guide](./docs/usage.md) (install, API, ranking profiles, backfills). This
+README is the quick tour; the guides are the full reference.
+
 Found a bug? Feature request?
 [File it here](https://github.com/elevatech/fuzzy-search/issues).
 
