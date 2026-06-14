@@ -5,6 +5,7 @@ import { SearchBar } from "./components/SearchBar";
 import { ProductGrid } from "./components/ProductGrid";
 import { FacetSidebar } from "./components/FacetSidebar";
 import { PreferencesEditor, type Profile } from "./components/PreferencesEditor";
+import { CATEGORY_OPTIONS } from "../convex/dataset";
 
 const PER_PAGE = 4;
 
@@ -33,6 +34,9 @@ export function Storefront() {
   const [textWeight, setTextWeight] = useState(1);
   const [popWeight, setPopWeight] = useState(0);
   const [affWeight, setAffWeight] = useState(0);
+  // Instant (re-seed-free) category boost via stored cat_<Category> fields.
+  const [boostCats, setBoostCats] = useState<string[]>([]);
+  const [catWeight, setCatWeight] = useState(0);
   const seed = useMutation(api.products.seed);
   const startSeed = useMutation(api.products.startSeed);
   const profile = useQuery(api.products.getProfile);
@@ -66,6 +70,7 @@ export function Storefront() {
       fields: [
         { field: "popularity", weight: popWeight },
         { field: "affinity", weight: affWeight },
+        ...boostCats.map((c) => ({ field: `cat_${c}`, weight: catWeight })),
       ],
     },
   });
@@ -109,6 +114,14 @@ export function Storefront() {
           active={sort === "relevance"}
         />
 
+        <InstantCategoryBoost
+          selected={boostCats}
+          weight={catWeight}
+          onToggle={(c) => { setBoostCats((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c])); setPage(1); }}
+          onWeight={(w) => { setCatWeight(w); setPage(1); }}
+          active={sort === "relevance"}
+        />
+
         <p>{result ? `${result.found} results · ${result.search_time_ms} ms` : "Loading…"}</p>
         <ProductGrid hits={result?.hits ?? []} showScore={sort === "relevance"} />
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
@@ -116,6 +129,57 @@ export function Storefront() {
           <span>Page {page} / {totalPages}</span>
           <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function InstantCategoryBoost({
+  selected,
+  weight,
+  onToggle,
+  onWeight,
+  active,
+}: {
+  selected: string[];
+  weight: number;
+  onToggle: (c: string) => void;
+  onWeight: (w: number) => void;
+  active: boolean;
+}) {
+  return (
+    <div
+      style={{
+        margin: "12px 0",
+        padding: 12,
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        background: "#fafafa",
+        color: "#222",
+        maxWidth: 560,
+        opacity: active ? 1 : 0.5,
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>
+        Instant category boost (no re-seed)
+      </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8 }}>
+        <span style={{ width: 130 }}>Boost weight</span>
+        <input type="range" min={0} max={5} step={0.5} value={weight} onChange={(e) => onWeight(Number(e.target.value))} />
+        <span style={{ width: 24, textAlign: "right" }}>{weight}</span>
+      </label>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px" }}>
+        {CATEGORY_OPTIONS.map((c) => (
+          <label key={c} style={{ fontSize: 13, display: "flex", gap: 4, alignItems: "center" }}>
+            <input type="checkbox" checked={selected.includes(c)} onChange={() => onToggle(c)} />
+            {c}
+          </label>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>
+        Boosts via stored <code>cat_&lt;Category&gt;</code> fields — applies live, no
+        re-seed. Needs the <strong>Load 5k</strong> dataset.
+        {active ? "" : " Switch Sort to “Relevance” to see it."}
       </div>
     </div>
   );

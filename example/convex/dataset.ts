@@ -161,7 +161,12 @@ export function generateRange(
   const out: { id: string; doc: Record<string, unknown> }[] = [];
   for (let i = start; i < start + count; i++) {
     const p = generateProduct(i, profile);
-    out.push({ id: p.id, doc: p as unknown as Record<string, unknown> });
+    // One category-membership flag (cat_<Category> = 1) enables INSTANT,
+    // re-seed-free category boosting via rankBy: a rankBy field "cat_Outdoors"
+    // ranks Outdoors products up (others coerce 0). Independent of `affinity`.
+    const doc: Record<string, unknown> = { ...(p as unknown as Record<string, unknown>) };
+    doc["cat_" + p.category] = 1;
+    out.push({ id: p.id, doc });
   }
   return out;
 }
