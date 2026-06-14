@@ -124,6 +124,7 @@ function WeightedScorePanel({
         border: "1px solid #ddd",
         borderRadius: 8,
         background: "#fafafa",
+        color: "#222",
         maxWidth: 360,
         opacity: active ? 1 : 0.5,
       }}
