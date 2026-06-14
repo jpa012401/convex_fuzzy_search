@@ -1,6 +1,21 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+export const rankTermValidator = v.union(
+  v.object({ id: v.string(), type: v.literal("field"), weight: v.number(), field: v.string() }),
+  v.object({ id: v.string(), type: v.literal("flag"), weight: v.number(), field: v.string(), equals: v.optional(v.string()) }),
+  v.object({ id: v.string(), type: v.literal("setBoost"), weight: v.number(), field: v.string(), setKey: v.string() }),
+  v.object({ id: v.string(), type: v.literal("recencyDecay"), weight: v.number(), field: v.string(), halfLifeMs: v.number() }),
+  v.object({ id: v.string(), type: v.literal("geoDistance"), weight: v.number(), latField: v.string(), lngField: v.string(), maxKm: v.number() }),
+  v.object({ id: v.string(), type: v.literal("relevance"), weight: v.number() }),
+);
+
+export const rankProfileValidator = v.object({
+  base: v.string(),
+  window: v.optional(v.number()),
+  terms: v.array(rankTermValidator),
+});
+
 export default defineSchema({
   collections: defineTable({
     name: v.string(),
@@ -26,6 +41,7 @@ export default defineSchema({
         ),
       ),
     ),
+    rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
   }).index("by_name", ["name"]),
 
   documents: defineTable({

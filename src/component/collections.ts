@@ -3,7 +3,8 @@ import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { clearCollectionCount } from "./counters";
 import { clearCollectionFacets } from "./facetCounts";
-import { clearCollectionSort } from "./sortIndex";
+import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
+import { rankProfileValidator } from "./schema";
 
 export async function loadCollection(ctx: QueryCtx, name: string) {
   return await ctx.db
@@ -44,6 +45,7 @@ export const createCollection = mutation({
         ),
       ),
     ),
+    rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
   },
   handler: async (ctx, args) => {
     const existing = await loadCollection(ctx, args.name);
@@ -77,6 +79,30 @@ export const createCollection = mutation({
         }
       }
     }
+    if (args.rankProfiles) {
+      const specIds = new Set((args.sortSpecs ?? []).map((s) => canonicalSpecId(s)));
+      const persisted = storedFields === "all" ? null : new Set(storedFields);
+      const fieldOk = (f: string) => persisted === null || persisted.has(f);
+      for (const [name, profile] of Object.entries(args.rankProfiles)) {
+        if (!specIds.has(profile.base)) {
+          throw new Error(`rankProfile "${name}" base "${profile.base}" must be a declared sortSpec`);
+        }
+        const seen = new Set<string>();
+        for (const term of profile.terms) {
+          if (seen.has(term.id)) throw new Error(`rankProfile "${name}" has duplicate term id "${term.id}"`);
+          seen.add(term.id);
+          const fields =
+            term.type === "geoDistance" ? [term.latField, term.lngField]
+            : term.type === "relevance" ? []
+            : [term.field];
+          for (const f of fields) {
+            if (!fieldOk(f)) {
+              throw new Error(`rankProfile "${name}" term "${term.id}" field "${f}" must be included in storedFields`);
+            }
+          }
+        }
+      }
+    }
     await ctx.db.insert("collections", {
       name: args.name,
       searchFields: args.searchFields,
@@ -84,6 +110,7 @@ export const createCollection = mutation({
       filterFields: args.filterFields,
       facetFields: args.facetFields,
       sortSpecs: args.sortSpecs,
+      rankProfiles: args.rankProfiles,
     });
   },
 });
