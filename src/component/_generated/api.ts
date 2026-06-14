@@ -9,6 +9,7 @@
  */
 
 import type * as collections from "../collections.js";
+import type * as counters from "../counters.js";
 import type * as filter from "../filter.js";
 import type * as fuzzy from "../fuzzy.js";
 import type * as highlight from "../highlight.js";
@@ -30,6 +31,7 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   collections: typeof collections;
+  counters: typeof counters;
   filter: typeof filter;
   fuzzy: typeof fuzzy;
   highlight: typeof highlight;
