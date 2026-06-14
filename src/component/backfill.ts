@@ -1,6 +1,7 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { addDoc } from "./counters";
+import { requireCollection } from "./collections";
 
 // Backfill the doc counter for a collection, one bounded page at a time.
 // Returns the next cursor (null when done). Idempotent (addDoc uses
@@ -35,5 +36,67 @@ export const backfillCounterPage = mutation({
     const done = page.length <= batch;
     const cursor = done ? null : rows[rows.length - 1].docId;
     return { cursor, done };
+  },
+});
+
+// Backfill (rebuild) the `filters` index rows for a collection, one bounded
+// page at a time. Re-derives each doc's filter rows from its `stored` snapshot
+// using the collection's `filterFields`. Idempotent: clears the doc's existing
+// filter rows then re-inserts, so safe to re-run. For deployments that indexed
+// documents before the S2 filter index existed (the write path now maintains
+// these rows automatically). Same manual cursor paging as backfillCounterPage.
+export const backfillFiltersPage = mutation({
+  args: {
+    collection: v.string(),
+    cursor: v.optional(v.union(v.string(), v.null())),
+    batch: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const col = await requireCollection(ctx, args.collection);
+    const batch = args.batch ?? 200;
+    const cursor = args.cursor ?? null;
+    const page = await ctx.db
+      .query("documents")
+      .withIndex("by_collection_doc", (q) =>
+        cursor === null
+          ? q.eq("collection", args.collection)
+          : q.eq("collection", args.collection).gt("docId", cursor),
+      )
+      .take(batch + 1);
+    const rows = page.slice(0, batch);
+    for (const d of rows) {
+      const existing = await ctx.db
+        .query("filters")
+        .withIndex("by_doc", (q) =>
+          q.eq("collection", args.collection).eq("docId", d.docId),
+        )
+        .collect();
+      for (const r of existing) await ctx.db.delete(r._id);
+      const stored = d.stored as Record<string, unknown>;
+      for (const f of col.filterFields ?? []) {
+        const value = stored[f.field];
+        if (value === undefined || value === null) continue;
+        if (f.type === "string") {
+          await ctx.db.insert("filters", {
+            collection: args.collection,
+            field: f.field,
+            docId: d.docId,
+            strVal: String(value),
+          });
+        } else {
+          const num = Number(value);
+          if (!Number.isNaN(num)) {
+            await ctx.db.insert("filters", {
+              collection: args.collection,
+              field: f.field,
+              docId: d.docId,
+              numVal: num,
+            });
+          }
+        }
+      }
+    }
+    const done = page.length <= batch;
+    return { cursor: done ? null : rows[rows.length - 1].docId, done };
   },
 });

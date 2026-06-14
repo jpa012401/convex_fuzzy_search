@@ -417,17 +417,19 @@ decide whether this release fits your use case:
   clauses are supported, but `!=` / "not equal" is not yet.
 - **Sort and rank are in-memory, bounded-scale.** `rankBy`/`sortBy` ordering
   (and faceting) are computed in-memory over the current result set; there is no
-  write-maintained indexed sort/filter table.
+  write-maintained indexed sort table yet (S4). `filter_by`, by contrast, **is**
+  now resolved through a write-maintained `filters` index (S2).
 - **Faceting is over scalar fields only, and in-memory.** Array-valued fields are
-  not yet expanded into multiple facet values, and there is no write-maintained
-  indexed filters table — filtering and faceting are evaluated in-memory over the
-  current result set. Indexed, write-maintained filters/sort and array facets are
-  a Phase 4 concern.
+  not yet expanded into multiple facet values, and `facet_counts` are still
+  tallied in-memory over the current result set (sharded facet counters are S3).
+  `filter_by` itself is index-resolved (S2), but does not support negation
+  (`!=`) or array-valued filter fields.
 - **Correct within bounded scale only.** Read paths have been partially
   un-bounded (see "Lean reads" below), but two limits remain. Browse combined
-  with filtering, faceting, or a custom sort/rank still loads the whole
-  collection into memory to evaluate those in-memory (Phase 4 slices S2–S4 lift
-  this). And a single query term matching more than ~16k postings exceeds
+  with faceting or a custom sort/rank (without a filter) still loads the whole
+  collection into memory to evaluate those in-memory (Phase 4 slices S3–S4 lift
+  this; filtering is already indexed — S2). And a single query term matching more
+  than ~16k postings exceeds
   Convex's per-query read limit (the "hot-term" problem). Within that ceiling
   (roughly tens of thousands of documents per collection) everything is
   **exact**; beyond it such a query will exceed limits.
@@ -446,15 +448,45 @@ counter maintained on every write:
 - **Simple browse pages directly off the aggregate.** An empty query with no
   filter, no facets, and no custom sort/rank reads the page's document ids
   straight from the ordered aggregate (`at(offset)`), then loads just that page.
-- **Browse + filter/facet/custom-sort still loads the full collection.** When an
-  empty-query browse is combined with filtering, faceting, or a custom
-  `sortBy`/`rankBy`, the collection is still loaded in memory to evaluate them.
-  Indexed filters, sharded facet counters, and an indexed numeric sort are the
-  remaining Phase 4 slices (S2–S4).
+- **Browse + filter resolves off the `filters` index (S2).** When an
+  empty-query browse is combined with `filterBy`, the matching document ids come
+  straight from the write-maintained `filters` index and only those documents
+  are loaded — no full-collection scan. Browse combined with **faceting or a
+  custom `sortBy`/`rankBy` (without a filter)** still loads the whole collection.
+  Sharded facet counters and an indexed numeric sort are the remaining Phase 4
+  slices (S3–S4).
 - **Still candidate-based for weighted ranking.** `rankBy` weighted ordering
   remains computed in-memory over the candidate/result set; hot terms and exact
   query-scoped facet counts at very large scale are still bounded as described
   above.
+
+### Indexed filtering (Phase 4 S2 — implemented)
+
+The second Phase 4 slice makes `filter_by` resolve through a write-maintained
+`filters` index instead of an in-memory scan of the whole collection:
+
+- **`filter_by` resolves via the `filters` index.** Each `filterFields` field is
+  maintained as index rows on every `upsert`/`delete` (string values on a
+  `by_str` index, coercible numeric values on a `by_num` index). A `filter_by`
+  expression is parsed to an AST and resolved to a set of document ids by reading
+  those indexes (exact, in-set, comparator, and range clauses become indexed
+  range reads; `&&`/`||` become set intersection/union) — no predicate scan over
+  stored docs.
+- **Browse + filter no longer loads the whole collection.** An empty query with a
+  `filterBy` uses the resolved id set as the result set and loads only those
+  documents.
+- **Text + filter intersects the index set with the postings candidates.** A
+  query with both search terms and a `filterBy` builds its candidate set from
+  `postings`, then keeps only ids that are also in the filter id set, and loads
+  only the survivors.
+- **One-time backfill for pre-S2 data.** The `filters` rows are only written on
+  upsert. Collections indexed before S2 have no filter rows, so `filter_by`
+  returns nothing until backfilled — see the migration note below.
+
+> **Still in-memory after S2:** faceting (S3) and `sortBy`/`rankBy` ordering (S4)
+> are still computed in-memory over the result set, and browse combined with
+> faceting or a custom sort/rank *without a filter* still loads the whole
+> collection. Negation (`!=`) and array-valued filter fields remain unsupported.
 
 ### Scaling beyond the bounded limit (Phase 4 — designed, not yet built)
 
@@ -467,8 +499,9 @@ buildable pieces (see
 
 - **Indexed retrieval** — replace the per-query full-collection load with a
   sharded `out_of` counter, an ordered document index for browse/paging, a
-  write-maintained `filters` table, precomputed sharded facet counters, and an
-  indexed numeric sort. This is the core scale unlock.
+  write-maintained `filters` table *(done — S2)*, precomputed sharded facet
+  counters *(S3)*, and an indexed numeric sort *(S4)*. This is the core scale
+  unlock.
 - **Postings sharding + early termination** — bound hot-term postings reads.
 - **Async bulk import** — stage and background-index large imports (today
   `upsertMany` runs in a single mutation and is bounded by per-mutation limits).
@@ -506,6 +539,24 @@ options:
   (`insertIfDoesNotExist`), so it is safe to re-run. See
   [`example/convex/products.ts`](./example/convex/products.ts) (`backfillCounter`)
   for a self-chaining driver.
+
+The Phase 4 S2 `filters` index is likewise only populated on write. Collections
+indexed before S2 have no filter rows, so `filter_by` will match **nothing**
+until the index is rebuilt. Again two options:
+
+- **Re-upsert** existing documents (the re-index step above also writes filter
+  rows), or
+- **Backfill the filters only**, without re-tokenizing, via
+  `search.backfillFiltersPage(ctx, { collection, cursor, batch })`. It re-derives
+  each document's filter rows from its stored snapshot using the collection's
+  `filterFields`, one bounded page per call, and returns `{ cursor, done }`; loop
+  (or self-chain) until `done`. It is idempotent (clears then re-inserts a doc's
+  rows), so safe to re-run. See
+  [`example/convex/products.ts`](./example/convex/products.ts)
+  (`backfillFilters`) for a self-chaining driver. Choose `batch` to stay under
+  Convex's 4,096-reads-per-call limit: each doc clears and re-inserts one row per
+  `filterFields` entry, so wide configs need a smaller batch (the example uses
+  `100` for an ~11-field config).
 
 ## Running the example app
 

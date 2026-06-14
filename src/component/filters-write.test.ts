@@ -50,4 +50,19 @@ describe("write path maintains filter rows", () => {
     await t.mutation(api.collections.deleteCollection, { name: "shop" });
     expect(await filterRows(t, "p1")).toEqual([]);
   });
+
+  it("backfill rebuilds filter rows for pre-existing docs", async () => {
+    const t = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("documents", { collection: "shop", docId: "z", stored: { name: "z", brand: "Aurora", price: 5 } });
+    });
+    expect(await filterRows(t, "z")).toEqual([]);
+    let cursor: string | null = null;
+    do {
+      const r: any = await t.mutation(api.backfill.backfillFiltersPage, { collection: "shop", cursor, batch: 1 });
+      cursor = r.cursor;
+    } while (cursor !== null);
+    const rows = await filterRows(t, "z");
+    expect(rows.map((r: any) => `${r.field}:${r.strVal ?? r.numVal}`).sort()).toEqual(["brand:Aurora", "price:5"]);
+  });
 });

@@ -31,6 +31,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      backfillFiltersPage: FunctionReference<
+        "mutation",
+        "internal",
+        { batch?: number; collection: string; cursor?: string | null },
+        any,
+        Name
+      >;
     };
     collections: {
       createCollection: FunctionReference<

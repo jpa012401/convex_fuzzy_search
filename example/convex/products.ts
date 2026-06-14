@@ -166,6 +166,26 @@ export const backfillCounter = mutation({
   },
 });
 
+// One-time filter-row backfill driver for collections indexed before the S2
+// filter index existed. Self-chains in the background like backfillCounter.
+export const backfillFilters = mutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
+  handler: async (ctx, { cursor, batch }) => {
+    // Default batch is modest: each doc clears + re-inserts one row per
+    // filterField, so wide filterFields configs (this demo has ~11) would blow
+    // the 4096-reads-per-call limit at larger batches.
+    const r = await search.backfillFiltersPage(ctx, {
+      collection: COLLECTION,
+      cursor: cursor ?? null,
+      batch: batch ?? 100,
+    });
+    if (!r.done) {
+      await ctx.scheduler.runAfter(0, api.products.backfillFilters, { cursor: r.cursor, batch });
+    }
+    return r;
+  },
+});
+
 // --- query wrapper ---------------------------------------------------------
 export const searchProducts = query({
   args: {

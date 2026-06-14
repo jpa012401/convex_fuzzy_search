@@ -96,6 +96,16 @@ export class FuzzySearch {
     return ctx.runMutation(this.component.backfill.backfillCounterPage, args);
   }
 
+  // Rebuild the filter index rows for a collection, one bounded page at a time.
+  // Returns the next cursor (null when done). Idempotent and safe to re-run.
+  // For collections indexed before the S2 filter index existed.
+  async backfillFiltersPage(
+    ctx: MutationCtx,
+    args: { collection: string; cursor?: string | null; batch?: number },
+  ): Promise<{ cursor: string | null; done: boolean }> {
+    return ctx.runMutation(this.component.backfill.backfillFiltersPage, args);
+  }
+
   async search(
     ctx: QueryCtx,
     args: {
