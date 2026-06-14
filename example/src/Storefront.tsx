@@ -4,6 +4,7 @@ import { api } from "../convex/_generated/api";
 import { SearchBar } from "./components/SearchBar";
 import { ProductGrid } from "./components/ProductGrid";
 import { FacetSidebar } from "./components/FacetSidebar";
+import { PreferencesEditor, type Profile } from "./components/PreferencesEditor";
 
 const PER_PAGE = 4;
 
@@ -34,11 +35,21 @@ export function Storefront() {
   const [affWeight, setAffWeight] = useState(0);
   const seed = useMutation(api.products.seed);
   const startSeed = useMutation(api.products.startSeed);
+  const profile = useQuery(api.products.getProfile);
+  const setProfile = useMutation(api.products.setProfile);
   const [loadMsg, setLoadMsg] = useState<string | null>(null);
+  const [prefsMsg, setPrefsMsg] = useState<string | null>(null);
 
   const onLoad5k = async () => {
     setLoadMsg("Seeding 5,000 products in the background — the result count will climb live as batches land.");
     await startSeed({});
+    setPage(1);
+  };
+
+  const onSavePrefs = async (p: Profile) => {
+    setPrefsMsg("Saving + re-personalizing 5,000 products in the background (~1 min)…");
+    await setProfile(p);
+    await startSeed({}); // recomputes affinity against the new profile
     setPage(1);
   };
 
@@ -85,6 +96,8 @@ export function Storefront() {
           <button onClick={onLoad5k}>Load 5k</button>
         </div>
         {loadMsg && <p style={{ fontSize: 13, color: "#888" }}>{loadMsg}</p>}
+
+        <PreferencesEditor profile={profile} onSave={onSavePrefs} status={prefsMsg} />
 
         <WeightedScorePanel
           textWeight={textWeight}

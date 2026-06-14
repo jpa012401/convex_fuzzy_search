@@ -1,3 +1,13 @@
-import { defineSchema } from "convex/server";
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
 
-export default defineSchema({});
+// The app stores only the editable personalization profile; product data lives
+// in the FuzzySearch component. A single "default" row holds the demo profile.
+export default defineSchema({
+  profiles: defineTable({
+    key: v.string(),
+    preferredCategories: v.array(v.string()),
+    preferredBrands: v.array(v.string()),
+    pastSearchTerms: v.array(v.string()),
+  }).index("by_key", ["key"]),
+});

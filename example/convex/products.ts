@@ -1,8 +1,8 @@
-import { action, mutation, query } from "./_generated/server";
+import { action, mutation, query, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { components, api } from "./_generated/api";
 import { FuzzySearch } from "@elevatech/fuzzy-search";
-import { generateRange } from "./dataset";
+import { generateRange, DEFAULT_PROFILE, type Profile } from "./dataset";
 
 const search = new FuzzySearch(components.fuzzySearch);
 const COLLECTION = "products";
@@ -33,6 +33,42 @@ async function createProductsCollection(ctx: any) {
     facetFields: FACET_FIELDS,
   });
 }
+
+// --- editable personalization profile --------------------------------------
+async function loadProfile(ctx: QueryCtx): Promise<Profile> {
+  const row = await ctx.db
+    .query("profiles")
+    .withIndex("by_key", (q) => q.eq("key", "default"))
+    .unique();
+  if (!row) return DEFAULT_PROFILE;
+  return {
+    preferredCategories: row.preferredCategories,
+    preferredBrands: row.preferredBrands,
+    pastSearchTerms: row.pastSearchTerms,
+  };
+}
+
+export const getProfile = query({
+  args: {},
+  handler: async (ctx) => loadProfile(ctx),
+});
+
+export const setProfile = mutation({
+  args: {
+    preferredCategories: v.array(v.string()),
+    preferredBrands: v.array(v.string()),
+    pastSearchTerms: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("profiles")
+      .withIndex("by_key", (q) => q.eq("key", "default"))
+      .unique();
+    if (row) await ctx.db.patch(row._id, args);
+    else await ctx.db.insert("profiles", { key: "default", ...args });
+    return { ok: true };
+  },
+});
 
 // --- small demo seed (6 hand-written products) -----------------------------
 const SAMPLE = [
@@ -79,9 +115,10 @@ export const seedChain = mutation({
   args: { start: v.number(), total: v.number(), batch: v.number() },
   handler: async (ctx, { start, total, batch }) => {
     const count = Math.min(batch, total - start);
+    const profile = await loadProfile(ctx); // affinity scored against current prefs
     await search.upsertMany(ctx, {
       collection: COLLECTION,
-      docs: generateRange(start, count),
+      docs: generateRange(start, count, profile),
     });
     const next = start + count;
     if (next < total) {

@@ -58,10 +58,15 @@ const CATEGORY_NAMES = Object.keys(CATEGORIES);
 // 40 deterministic brand names
 const BRAND_PREFIX = ["Aur", "Nim", "Ver", "Pol", "Kor", "Zen", "Lum", "Tor", "Vel", "Hax"];
 const BRAND_SUFFIX = ["ora", "bus", "tex", "aris", "vex", "ity"];
-const BRANDS: string[] = [];
-for (const p of BRAND_PREFIX) for (const s of BRAND_SUFFIX) BRANDS.push(p + s);
+const BRANDS_ALL: string[] = [];
+for (const p of BRAND_PREFIX) for (const s of BRAND_SUFFIX) BRANDS_ALL.push(p + s);
 // -> 60 unique brands; keep first 40
-BRANDS.length = 40;
+BRANDS_ALL.length = 40;
+
+// Exported so the Preferences UI can offer the real category/brand options.
+export const CATEGORY_OPTIONS = CATEGORY_NAMES;
+export const BRAND_OPTIONS = BRANDS_ALL;
+const BRANDS = BRANDS_ALL;
 
 export type Product = {
   id: string;
@@ -81,32 +86,36 @@ export type Product = {
   image: string;
 };
 
-// Demo user preference profile — what "personalization" is scored against.
-export const USER_PROFILE = {
-  preferredCategories: ["Electronics", "Outdoors"],
-  preferredBrands: ["Aurora", "Vertex"], // may or may not exist in BRANDS; matched by string
-  pastSearchTerms: ["wireless", "trail", "waterproof"],
-  viewsEveryNth: 137, // product ids where index % N === 0 count as "previously viewed"
+// Editable user preference profile — what "personalization" is scored against.
+export type Profile = {
+  preferredCategories: string[];
+  preferredBrands: string[];
+  pastSearchTerms: string[];
 };
 
-function computeAffinity(p: {
-  category: string;
-  brand: string;
-  name: string;
-  description: string;
-  index: number;
-}): number {
+export const DEFAULT_PROFILE: Profile = {
+  preferredCategories: ["Electronics", "Outdoors"],
+  preferredBrands: ["Aurora", "Vertex"],
+  pastSearchTerms: ["wireless", "trail", "waterproof"],
+};
+
+// Score a product's match to a profile. 0..7. Recomputed whenever the profile
+// changes (the dataset is re-seeded), since rankBy can only blend stored numbers.
+export function computeAffinity(
+  p: { category: string; brand: string; name: string; description: string },
+  profile: Profile,
+): number {
   let a = 0;
-  if (USER_PROFILE.preferredCategories.includes(p.category)) a += 3;
-  if (USER_PROFILE.preferredBrands.includes(p.brand)) a += 2;
+  if (profile.preferredCategories.includes(p.category)) a += 3;
+  if (profile.preferredBrands.includes(p.brand)) a += 2;
   const hay = (p.name + " " + p.description).toLowerCase();
-  if (USER_PROFILE.pastSearchTerms.some((t) => hay.includes(t))) a += 2;
-  if (p.index % USER_PROFILE.viewsEveryNth === 0) a += 1;
+  if (profile.pastSearchTerms.some((t) => t && hay.includes(t.toLowerCase()))) a += 2;
   return a;
 }
 
-// Generate the product at a given index (0-based). Deterministic.
-export function generateProduct(index: number): Product {
+// Generate the product at a given index (0-based). Base fields are deterministic;
+// `affinity` is scored against the supplied profile.
+export function generateProduct(index: number, profile: Profile = DEFAULT_PROFILE): Product {
   const r = rng(index + 1);
   const category = pick(r, CATEGORY_NAMES);
   const { subs, nouns } = CATEGORIES[category];
@@ -121,7 +130,7 @@ export function generateProduct(index: number): Product {
   const description = `A ${adj} ${material} ${noun} with ${pick(r, FEATURES)} and ${pick(r, FEATURES)}, ideal for ${pick(r, USE_CASES)}.`;
 
   const id = "p" + String(index + 1).padStart(5, "0");
-  const affinity = computeAffinity({ category, brand, name, description, index });
+  const affinity = computeAffinity({ category, brand, name, description }, profile);
 
   return {
     id,
@@ -142,11 +151,16 @@ export function generateProduct(index: number): Product {
   };
 }
 
-// Generate a contiguous range of products as { id, doc } upsert entries.
-export function generateRange(start: number, count: number) {
+// Generate a contiguous range of products as { id, doc } upsert entries,
+// scoring affinity against the supplied profile.
+export function generateRange(
+  start: number,
+  count: number,
+  profile: Profile = DEFAULT_PROFILE,
+) {
   const out: { id: string; doc: Record<string, unknown> }[] = [];
   for (let i = start; i < start + count; i++) {
-    const p = generateProduct(i);
+    const p = generateProduct(i, profile);
     out.push({ id: p.id, doc: p as unknown as Record<string, unknown> });
   }
   return out;
