@@ -7,7 +7,7 @@ import { FacetSidebar } from "./components/FacetSidebar";
 import { PreferencesEditor, type Profile } from "./components/PreferencesEditor";
 import { CATEGORY_OPTIONS } from "../convex/dataset";
 
-const PER_PAGE = 4;
+const PER_PAGE = 20;
 
 const SORTS = {
   relevance: undefined,
