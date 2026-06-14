@@ -11,6 +11,7 @@ export type FacetCount = {
 
 export type SearchResult = {
   found: number;
+  found_approximate: boolean;
   page: number;
   out_of: number;
   search_time_ms: number;

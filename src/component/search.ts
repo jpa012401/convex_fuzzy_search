@@ -3,7 +3,7 @@ import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
-import { candidateTermsForToken } from "./matching";
+import { matchTokens } from "./textSearch";
 import { parseFilterAst, resolveAstToDocIds } from "./filter";
 import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
@@ -13,29 +13,6 @@ import { specMatches, canonicalSpecId, pageSortedDocIds } from "./sortIndex";
 import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
-
-async function docScoresForToken(
-  ctx: QueryCtx,
-  collection: string,
-  candidates: Map<string, number>,
-  queryBy: string[] | undefined,
-): Promise<Map<string, number>> {
-  const docScore = new Map<string, number>();
-  for (const [term, score] of candidates) {
-    const rows = await ctx.db
-      .query("postings")
-      .withIndex("by_collection_term", (q) =>
-        q.eq("collection", collection).eq("term", term),
-      )
-      .collect();
-    for (const r of rows) {
-      if (queryBy && !queryBy.includes(r.field)) continue;
-      const cur = docScore.get(r.docId);
-      if (cur === undefined || score > cur) docScore.set(r.docId, score);
-    }
-  }
-  return docScore;
-}
 
 // Load only the named docs (bounded by ids.length, not the collection).
 async function loadDocs(
@@ -100,7 +77,7 @@ export const search = query({
         highlight: {},
         text_match: 0,
       }));
-      return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
+      return { found: out_of, found_approximate: false, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
     }
 
     // ---- LEAN BROWSE + FACETS: empty q, no filter, no custom order -> page off
@@ -121,7 +98,7 @@ export const search = query({
         const counts = await readFacetCounts(ctx, args.collection, field, maxValues);
         facet_counts.push({ field_name: field, counts });
       }
-      return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+      return { found: out_of, found_approximate: false, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
     }
 
     // ---- LEAN BROWSE + SORT: empty q, no filter, no rankBy, and sortBy matches
@@ -155,7 +132,7 @@ export const search = query({
             facet_counts.push({ field_name: field, counts });
           }
         }
-        return { found: out_of, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+        return { found: out_of, found_approximate: false, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
       }
     }
 
@@ -176,27 +153,16 @@ export const search = query({
     let scoreById: Map<string, number> | null = null;
     const matchedTerms = new Set<string>();
     let byId: Map<string, unknown>;
+    let truncated = false;
+    let singleExactTerm: string | null = null;
 
     if (tokens.length > 0) {
-      // TEXT PATH: candidate set from postings; intersect with filter; load only those docs.
-      const perToken: Map<string, number>[] = [];
-      for (let i = 0; i < tokens.length; i++) {
-        const candidates = await candidateTermsForToken(ctx, args.collection, tokens[i], i === tokens.length - 1);
-        for (const term of candidates.keys()) matchedTerms.add(term);
-        perToken.push(await docScoresForToken(ctx, args.collection, candidates, args.queryBy));
-      }
-      perToken.sort((a, b) => a.size - b.size);
-      const [first, ...rest] = perToken;
-      scoreById = new Map();
-      if (first) {
-        for (const [docId, s0] of first) {
-          if (rest.every((m) => m.has(docId))) {
-            let total = s0;
-            for (const m of rest) total += m.get(docId)!;
-            scoreById.set(docId, total);
-          }
-        }
-      }
+      // TEXT PATH: driver-token intersection (bounded). Intersect with filter; load only matched docs.
+      const m = await matchTokens(ctx, args.collection, tokens, args.queryBy);
+      scoreById = m.scoreById;
+      for (const term of m.matchedTerms) matchedTerms.add(term);
+      truncated = m.truncated;
+      singleExactTerm = m.singleExactTerm;
       matchedIds = [...scoreById.keys()];
       if (filterIds) matchedIds = matchedIds.filter((id) => filterIds!.has(id));
       byId = await loadDocs(ctx, args.collection, matchedIds);
@@ -216,7 +182,20 @@ export const search = query({
 
     const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
 
-    const found = matchedIds.length;
+    let found = matchedIds.length;
+    let found_approximate = false;
+    if (truncated) {
+      found_approximate = true;
+      if (singleExactTerm && !filterIds) {
+        const termRow = await ctx.db
+          .query("terms")
+          .withIndex("by_collection_term", (q) =>
+            q.eq("collection", args.collection).eq("term", singleExactTerm as string),
+          )
+          .unique();
+        if (termRow) found = termRow.docCount;
+      }
+    }
 
     const rawScore = (id: string) => (scoreById ? (scoreById.get(id) ?? 0) : 0);
     const orderScore = (id: string) => orderingScore(rawScore(id), storedOf(id), args.rankBy);
@@ -261,6 +240,6 @@ export const search = query({
       return { document: stored, highlight, text_match: rawScore(id) };
     });
 
-    return { found, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+    return { found, found_approximate, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
   },
 });
