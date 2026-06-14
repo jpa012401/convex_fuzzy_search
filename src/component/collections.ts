@@ -33,6 +33,16 @@ export const createCollection = mutation({
       ),
     ),
     facetFields: v.optional(v.array(v.string())),
+    sortSpecs: v.optional(
+      v.array(
+        v.array(
+          v.object({
+            field: v.string(),
+            order: v.union(v.literal("asc"), v.literal("desc")),
+          }),
+        ),
+      ),
+    ),
   },
   handler: async (ctx, args) => {
     const existing = await loadCollection(ctx, args.name);
@@ -56,6 +66,15 @@ export const createCollection = mutation({
           );
         }
       }
+      for (const spec of args.sortSpecs ?? []) {
+        for (const k of spec) {
+          if (!persisted.has(k.field)) {
+            throw new Error(
+              `sortSpecs field "${k.field}" must be included in storedFields`,
+            );
+          }
+        }
+      }
     }
     await ctx.db.insert("collections", {
       name: args.name,
@@ -63,6 +82,7 @@ export const createCollection = mutation({
       storedFields,
       filterFields: args.filterFields,
       facetFields: args.facetFields,
+      sortSpecs: args.sortSpecs,
     });
   },
 });

@@ -16,6 +16,16 @@ export default defineSchema({
       ),
     ),
     facetFields: v.optional(v.array(v.string())),
+    sortSpecs: v.optional(
+      v.array(
+        v.array(
+          v.object({
+            field: v.string(),
+            order: v.union(v.literal("asc"), v.literal("desc")),
+          }),
+        ),
+      ),
+    ),
   }).index("by_name", ["name"]),
 
   documents: defineTable({

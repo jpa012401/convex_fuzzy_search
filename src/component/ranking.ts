@@ -1,7 +1,7 @@
 export type RankBy = { text?: number; fields?: { field: string; weight: number }[] };
 export type SortKey = { field: string; order: "asc" | "desc" };
 
-function numField(stored: Record<string, unknown>, field: string): number {
+export function numField(stored: Record<string, unknown>, field: string): number {
   const v = Number(stored[field]);
   return Number.isNaN(v) ? 0 : v;
 }
