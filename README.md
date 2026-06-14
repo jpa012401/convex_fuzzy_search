@@ -485,9 +485,38 @@ In a second terminal start the Vite frontend:
 npm run dev:frontend
 ```
 
-Open the app, click **Seed data** to create the `products` collection and load
+Open the app, click **Seed 6** to create the `products` collection and load
 sample documents, then try searching (e.g. `aurora shoe`, `aur` for a prefix
 match, or `aurra` to see typo tolerance in action).
+
+### Stress-testing with a 5,000-product synthetic dataset
+
+[`example/convex/dataset.ts`](./example/convex/dataset.ts) is a deterministic
+generator producing 5,000 products with rich fields — `brand`, `category`,
+`subcategory`, `price`, `rating`, `popularity`, `views`, `purchases`,
+`releasedDaysAgo`, `inStock`, and a precomputed **`affinity`** score (each
+product's match to a demo user profile of preferred categories/brands, past
+search terms, and viewed items). `affinity` is what makes the weighted sort
+*personalized*: `rankBy: { text: 1, fields: [{ field: "affinity", weight: 5 }] }`
+ranks results by relevance blended with how well they fit the user.
+
+Load it from the storefront's **Load 5k** button (it seeds in the background via
+a self-chaining mutation, so the result count climbs live), or from the CLI:
+
+```sh
+npx convex run products:startSeed '{"total":5000}'   # background load
+npx convex run products:benchmark '{}'               # feature + timing sweep
+```
+
+`benchmark` runs a representative query set (plain/AND/prefix/typo/filter/facet/
+personalized-sort/multi-key-sort/deep-pagination) and reports `found` +
+`search_time_ms` for each. 5,000 docs sits comfortably under the per-query read
+ceiling, so this exercises real speed within the exact-correct envelope.
+
+> **Note (a real scale finding):** `deleteCollection` reads every index row in a
+> single mutation, so it hits Convex's 4,096-reads-per-call limit on a large
+> collection. The loader avoids this by re-seeding (upsert replaces) rather than
+> dropping. A batched, scalable `deleteCollection` is part of Phase 4.
 
 ## Design specs
 

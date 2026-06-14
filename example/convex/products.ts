@@ -1,13 +1,40 @@
-import { mutation, query } from "./_generated/server";
+import { action, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { components } from "./_generated/api";
+import { components, api } from "./_generated/api";
 import { FuzzySearch } from "@elevatech/fuzzy-search";
+import { generateRange } from "./dataset";
 
 const search = new FuzzySearch(components.fuzzySearch);
 const COLLECTION = "products";
 
-// `popularity` is deliberately uncorrelated with price/relevance so the weighted
-// blend (rankBy) visibly reorders results when you crank its weight.
+// Filter/facet field declarations shared by the small demo seed and the large
+// synthetic dataset. Numeric fields double as rankBy/sortBy signals.
+const FILTER_FIELDS = [
+  { field: "brand", type: "string" as const },
+  { field: "category", type: "string" as const },
+  { field: "subcategory", type: "string" as const },
+  { field: "inStock", type: "string" as const },
+  { field: "price", type: "number" as const },
+  { field: "rating", type: "number" as const },
+  { field: "popularity", type: "number" as const },
+  { field: "views", type: "number" as const },
+  { field: "purchases", type: "number" as const },
+  { field: "releasedDaysAgo", type: "number" as const },
+  { field: "affinity", type: "number" as const },
+];
+const FACET_FIELDS = ["brand", "category", "subcategory", "inStock"];
+
+async function createProductsCollection(ctx: any) {
+  await search.createCollection(ctx, {
+    name: COLLECTION,
+    searchFields: ["name", "description", "brand", "category"],
+    storedFields: "all",
+    filterFields: FILTER_FIELDS,
+    facetFields: FACET_FIELDS,
+  });
+}
+
+// --- small demo seed (6 hand-written products) -----------------------------
 const SAMPLE = [
   { id: "1", name: "Aurora Running Shoe", description: "lightweight road running shoe", brand: "Aurora", category: "Shoes", price: 89, popularity: 50, image: "https://picsum.photos/seed/1/300" },
   { id: "2", name: "Aurora Trail Shoe", description: "grippy off-road trail shoe", brand: "Aurora", category: "Shoes", price: 109, popularity: 10, image: "https://picsum.photos/seed/2/300" },
@@ -22,17 +49,7 @@ export const seed = mutation({
   handler: async (ctx) => {
     const existing = await search.getCollection(ctx, COLLECTION);
     if (existing) await search.deleteCollection(ctx, COLLECTION);
-    await search.createCollection(ctx, {
-      name: COLLECTION,
-      searchFields: ["name", "description", "brand", "category"],
-      storedFields: "all",
-      filterFields: [
-        { field: "brand", type: "string" },
-        { field: "category", type: "string" },
-        { field: "price", type: "number" },
-      ],
-      facetFields: ["brand", "category"],
-    });
+    await createProductsCollection(ctx);
     await search.upsertMany(ctx, {
       collection: COLLECTION,
       docs: SAMPLE.map(({ id, ...rest }) => ({ id, doc: { id, ...rest } })),
@@ -41,6 +58,61 @@ export const seed = mutation({
   },
 });
 
+// --- large synthetic dataset (batched, driven by an action) ----------------
+
+// NOTE on resetting at scale: the component's deleteCollection reads every
+// index row (postings/terms/trigrams) for the collection in ONE mutation, which
+// exceeds Convex's 4096-reads-per-call limit once a few hundred docs are
+// indexed. So we avoid deleting a large collection: re-seeding the deterministic
+// ids just UPSERTS (replace semantics). We only drop+recreate when the existing
+// collection has the wrong config (e.g. the tiny 6-product seed), where the
+// delete is cheap. (A scalable batched deleteCollection is a Phase 4 task.)
+
+
+// Indexes one batch, then schedules the next — a self-chaining background load.
+// Each invocation is its own transaction (bounded reads/writes), and they run
+// sequentially so there's no write contention on shared term rows. The client
+// doesn't wait; Convex reactivity surfaces progress (out_of climbs live).
+// Batch kept modest: each product tokenizes to ~30 terms and a replace-upsert
+// reads that doc's postings, so larger batches risk the 4096-reads limit.
+export const seedChain = mutation({
+  args: { start: v.number(), total: v.number(), batch: v.number() },
+  handler: async (ctx, { start, total, batch }) => {
+    const count = Math.min(batch, total - start);
+    await search.upsertMany(ctx, {
+      collection: COLLECTION,
+      docs: generateRange(start, count),
+    });
+    const next = start + count;
+    if (next < total) {
+      await ctx.scheduler.runAfter(0, api.products.seedChain, { start: next, total, batch });
+    }
+    return { indexed: count, done: next >= total };
+  },
+});
+
+// Kicks off a full large-dataset load in the background. Ensures a full-config
+// collection exists (without deleting a large one — re-seeding upserts), then
+// schedules the chain. Returns immediately.
+export const startSeed = mutation({
+  args: { total: v.optional(v.number()), batch: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const total = args.total ?? 5000;
+    const batch = args.batch ?? 50;
+    const c = await search.getCollection(ctx, COLLECTION);
+    const hasFullConfig = !!c?.filterFields?.some((f: any) => f.field === "affinity");
+    if (!c) {
+      await createProductsCollection(ctx);
+    } else if (!hasFullConfig) {
+      await search.deleteCollection(ctx, COLLECTION); // small wrong-config collection
+      await createProductsCollection(ctx);
+    }
+    await ctx.scheduler.runAfter(0, api.products.seedChain, { start: 0, total, batch });
+    return { scheduled: total, batch };
+  },
+});
+
+// --- query wrapper ---------------------------------------------------------
 export const searchProducts = query({
   args: {
     q: v.string(),
@@ -67,4 +139,42 @@ export const searchProducts = query({
   },
   handler: async (ctx, args) =>
     search.search(ctx, { collection: COLLECTION, ...args }),
+});
+
+// --- benchmark harness -----------------------------------------------------
+// Runs a representative set of queries and reports found + server-side timing,
+// exercising every feature against the loaded dataset.
+export const benchmark = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ label: string; found: number; ms: number; top?: string }[]> => {
+    const cases: { label: string; args: Record<string, unknown> }[] = [
+      { label: "plain term", args: { q: "jacket" } },
+      { label: "multi-term AND", args: { q: "waterproof jacket" } },
+      { label: "prefix (as-you-type)", args: { q: "jack" } },
+      { label: "typo tolerance", args: { q: "jackt" } },
+      { label: "browse all", args: { q: "" } },
+      { label: "numeric range filter", args: { q: "", filterBy: "price:[50..150]" } },
+      { label: "boolean+facet", args: { q: "", filterBy: "inStock:true", facetBy: ["category"] } },
+      { label: "category facet (browse)", args: { q: "", facetBy: ["brand", "category"] } },
+      {
+        label: "personalized weighted sort",
+        args: { q: "", rankBy: { text: 1, fields: [{ field: "affinity", weight: 5 }, { field: "popularity", weight: 0.01 }] } },
+      },
+      { label: "multi-key sort (rating desc)", args: { q: "", sortBy: [{ field: "rating", order: "desc" }] } },
+      { label: "deep pagination (page 40)", args: { q: "", page: 40, perPage: 20 } },
+    ];
+    const out = [];
+    for (const c of cases) {
+      const r: any = await ctx.runQuery(api.products.searchProducts, c.args as any);
+      out.push({
+        label: c.label,
+        found: r.found,
+        ms: r.search_time_ms,
+        top: r.hits[0]?.document?.name,
+      });
+    }
+    return out;
+  },
 });

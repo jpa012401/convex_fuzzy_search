@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as dataset from "../dataset.js";
 import type * as products from "../products.js";
 
 import type {
@@ -17,6 +18,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  dataset: typeof dataset;
   products: typeof products;
 }>;
 

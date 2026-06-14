@@ -32,6 +32,14 @@ export function Storefront() {
   const [textWeight, setTextWeight] = useState(1);
   const [popWeight, setPopWeight] = useState(0);
   const seed = useMutation(api.products.seed);
+  const startSeed = useMutation(api.products.startSeed);
+  const [loadMsg, setLoadMsg] = useState<string | null>(null);
+
+  const onLoad5k = async () => {
+    setLoadMsg("Seeding 5,000 products in the background — the result count will climb live as batches land.");
+    await startSeed({});
+    setPage(1);
+  };
 
   const filterBy = buildFilterBy(selected);
   const result = useQuery(api.products.searchProducts, {
@@ -66,8 +74,10 @@ export function Storefront() {
             <option value="price-asc">Price ↑</option>
             <option value="price-desc">Price ↓</option>
           </select>
-          <button onClick={() => seed()}>Seed data</button>
+          <button onClick={() => seed()}>Seed 6</button>
+          <button onClick={onLoad5k}>Load 5k</button>
         </div>
+        {loadMsg && <p style={{ fontSize: 13, color: "#888" }}>{loadMsg}</p>}
 
         <WeightedScorePanel
           textWeight={textWeight}
@@ -77,7 +87,7 @@ export function Storefront() {
           active={sort === "relevance"}
         />
 
-        <p>{result ? `${result.found} results` : "Loading…"}</p>
+        <p>{result ? `${result.found} results · ${result.search_time_ms} ms` : "Loading…"}</p>
         <ProductGrid hits={result?.hits ?? []} showScore={sort === "relevance"} />
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
           <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
