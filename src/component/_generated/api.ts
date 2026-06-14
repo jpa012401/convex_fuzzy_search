@@ -11,8 +11,10 @@
 import type * as collections from "../collections.js";
 import type * as filter from "../filter.js";
 import type * as fuzzy from "../fuzzy.js";
+import type * as highlight from "../highlight.js";
 import type * as http from "../http.js";
 import type * as matching from "../matching.js";
+import type * as ranking from "../ranking.js";
 import type * as search from "../search.js";
 import type * as terms from "../terms.js";
 import type * as tokenizer from "../tokenizer.js";
@@ -30,8 +32,10 @@ const fullApi: ApiFromModules<{
   collections: typeof collections;
   filter: typeof filter;
   fuzzy: typeof fuzzy;
+  highlight: typeof highlight;
   http: typeof http;
   matching: typeof matching;
+  ranking: typeof ranking;
   search: typeof search;
   terms: typeof terms;
   tokenizer: typeof tokenizer;

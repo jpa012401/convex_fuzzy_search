@@ -199,3 +199,76 @@ describe("filtering + faceting", () => {
     ).rejects.toThrow(/facet/i);
   });
 });
+
+describe("highlighting + weighted sort", () => {
+  async function setupShop() {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.collections.createCollection, {
+      name: "shop",
+      searchFields: ["name"],
+      storedFields: "all",
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "shop",
+      docs: [
+        { id: "1", doc: { id: "1", name: "Red Running Shoe", price: 90, popularity: 1 } },
+        { id: "2", doc: { id: "2", name: "Blue Running Jacket", price: 50, popularity: 100 } },
+        { id: "3", doc: { id: "3", name: "Red Hat", price: 20, popularity: 5 } },
+      ],
+    });
+    return t;
+  }
+
+  it("highlights the matched term in the field, preserving case", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, { collection: "shop", q: "running" });
+    const hit = r.hits.find((h: any) => h.document.id === "1");
+    expect(hit.highlight).toEqual({
+      name: { snippet: "Red <mark>Running</mark> Shoe", matched_tokens: ["Running"] },
+    });
+  });
+
+  it("prefix query highlights the full term", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, { collection: "shop", q: "run" });
+    const hit = r.hits.find((h: any) => h.document.id === "1");
+    expect(hit.highlight.name.snippet).toContain("<mark>Running</mark>");
+  });
+
+  it("browse mode yields empty highlight", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, { collection: "shop", q: "" });
+    expect(r.hits[0].highlight).toEqual({});
+  });
+
+  it("rankBy blends popularity to reorder (and text_match stays raw)", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, {
+      collection: "shop",
+      q: "running",
+      rankBy: { text: 1, fields: [{ field: "popularity", weight: 1 }] },
+    });
+    expect(r.hits[0].document.id).toBe("2"); // popularity 100 wins
+    expect(r.hits[0].text_match).toBe(3); // reported relevance still raw
+  });
+
+  it("sortBy price ascending orders by field", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, {
+      collection: "shop",
+      q: "",
+      sortBy: [{ field: "price", order: "asc" }],
+    });
+    expect(r.hits.map((h: any) => h.document.id)).toEqual(["3", "2", "1"]);
+  });
+
+  it("sortBy price descending", async () => {
+    const t = await setupShop();
+    const r = await t.query(api.search.search, {
+      collection: "shop",
+      q: "",
+      sortBy: [{ field: "price", order: "desc" }],
+    });
+    expect(r.hits.map((h: any) => h.document.id)).toEqual(["1", "2", "3"]);
+  });
+});

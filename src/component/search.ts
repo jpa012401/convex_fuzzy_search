@@ -5,12 +5,12 @@ import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
 import { candidateTermsForToken } from "./matching";
 import { parseFilter } from "./filter";
+import { highlightField } from "./highlight";
+import { orderingScore, compareMatches } from "./ranking";
 import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
 
-// For one token's candidate terms, return docId -> best score among matched terms,
-// restricted to queryBy fields when provided.
 async function docScoresForToken(
   ctx: QueryCtx,
   collection: string,
@@ -44,6 +44,22 @@ export const search = query({
     filterBy: v.optional(v.string()),
     facetBy: v.optional(v.array(v.string())),
     maxFacetValues: v.optional(v.number()),
+    rankBy: v.optional(
+      v.object({
+        text: v.optional(v.number()),
+        fields: v.optional(
+          v.array(v.object({ field: v.string(), weight: v.number() })),
+        ),
+      }),
+    ),
+    sortBy: v.optional(
+      v.array(
+        v.object({
+          field: v.string(),
+          order: v.union(v.literal("asc"), v.literal("desc")),
+        }),
+      ),
+    ),
   },
   handler: async (ctx, args): Promise<SearchResult> => {
     const start = Date.now();
@@ -60,6 +76,7 @@ export const search = query({
     const byId = new Map(allDocs.map((d) => [d.docId, d.stored]));
 
     const tokens = tokenize(args.q);
+    const matchedTerms = new Set<string>();
 
     let matchedIds: string[];
     let scoreById: Map<string, number> | null = null;
@@ -75,6 +92,7 @@ export const search = query({
           tokens[i],
           i === tokens.length - 1,
         );
+        for (const term of candidates.keys()) matchedTerms.add(term);
         perToken.push(
           await docScoresForToken(ctx, args.collection, candidates, args.queryBy),
         );
@@ -104,14 +122,14 @@ export const search = query({
 
     const found = matchedIds.length;
 
-    if (scoreById) {
-      matchedIds.sort((a, b) => {
-        const d = scoreById!.get(b)! - scoreById!.get(a)!;
-        return d !== 0 ? d : a < b ? -1 : a > b ? 1 : 0;
-      });
-    } else {
-      matchedIds.sort();
-    }
+    // Order: weighted/relevance score per doc, optional multi-key sort, docId tie-break.
+    const rawScore = (id: string) => (scoreById ? (scoreById.get(id) ?? 0) : 0);
+    const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
+    const orderScore = (id: string) =>
+      orderingScore(rawScore(id), storedOf(id), args.rankBy);
+    matchedIds.sort((a, b) =>
+      compareMatches(a, b, { score: orderScore, stored: storedOf, sortBy: args.sortBy }),
+    );
 
     // Faceting over the full (filtered) result set — query-scoped counts.
     const facet_counts: FacetCount[] = [];
@@ -124,8 +142,7 @@ export const search = query({
         }
         const tally = new Map<string, number>();
         for (const id of matchedIds) {
-          const doc = byId.get(id) as Record<string, unknown> | undefined;
-          const raw = doc?.[field];
+          const raw = storedOf(id)[field];
           if (raw === undefined || raw === null) continue;
           const value = String(raw);
           tally.set(value, (tally.get(value) ?? 0) + 1);
@@ -139,11 +156,20 @@ export const search = query({
     }
 
     const pageIds = matchedIds.slice((page - 1) * perPage, (page - 1) * perPage + perPage);
-    const hits: Hit[] = pageIds.map((id) => ({
-      document: (byId.get(id) ?? {}) as Record<string, unknown>,
-      highlight: {},
-      text_match: scoreById ? (scoreById.get(id) ?? 0) : 0,
-    }));
+    const fields = args.queryBy ?? collection.searchFields;
+    const hits: Hit[] = pageIds.map((id) => {
+      const stored = storedOf(id);
+      const highlight: Record<string, { snippet: string; matched_tokens: string[] }> = {};
+      if (matchedTerms.size > 0) {
+        for (const field of fields) {
+          const value = stored[field];
+          if (typeof value !== "string") continue;
+          const h = highlightField(value, matchedTerms);
+          if (h) highlight[field] = h;
+        }
+      }
+      return { document: stored, highlight, text_match: rawScore(id) };
+    });
 
     return {
       found,

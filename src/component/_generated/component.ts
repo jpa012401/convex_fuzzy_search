@@ -65,6 +65,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           perPage?: number;
           q: string;
           queryBy?: Array<string>;
+          rankBy?: {
+            fields?: Array<{ field: string; weight: number }>;
+            text?: number;
+          };
+          sortBy?: Array<{ field: string; order: "asc" | "desc" }>;
         },
         any,
         Name
