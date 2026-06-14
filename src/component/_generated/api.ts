@@ -18,6 +18,7 @@ import type * as highlight from "../highlight.js";
 import type * as http from "../http.js";
 import type * as matching from "../matching.js";
 import type * as ranking from "../ranking.js";
+import type * as score from "../score.js";
 import type * as search from "../search.js";
 import type * as sortIndex from "../sortIndex.js";
 import type * as stats from "../stats.js";
@@ -45,6 +46,7 @@ const fullApi: ApiFromModules<{
   http: typeof http;
   matching: typeof matching;
   ranking: typeof ranking;
+  score: typeof score;
   search: typeof search;
   sortIndex: typeof sortIndex;
   stats: typeof stats;

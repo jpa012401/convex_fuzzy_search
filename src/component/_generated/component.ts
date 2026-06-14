@@ -61,6 +61,46 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           facetFields?: Array<string>;
           filterFields?: Array<{ field: string; type: "string" | "number" }>;
           name: string;
+          rankProfiles?: Record<
+            string,
+            {
+              base: string;
+              terms: Array<
+                | { field: string; id: string; type: "field"; weight: number }
+                | {
+                    equals?: string;
+                    field: string;
+                    id: string;
+                    type: "flag";
+                    weight: number;
+                  }
+                | {
+                    field: string;
+                    id: string;
+                    setKey: string;
+                    type: "setBoost";
+                    weight: number;
+                  }
+                | {
+                    field: string;
+                    halfLifeMs: number;
+                    id: string;
+                    type: "recencyDecay";
+                    weight: number;
+                  }
+                | {
+                    id: string;
+                    latField: string;
+                    lngField: string;
+                    maxKm: number;
+                    type: "geoDistance";
+                    weight: number;
+                  }
+                | { id: string; type: "relevance"; weight: number }
+              >;
+              window?: number;
+            }
+          >;
           searchFields: Array<string>;
           sortSpecs?: Array<Array<{ field: string; order: "asc" | "desc" }>>;
           storedFields?: "all" | Array<string>;
@@ -96,6 +136,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           perPage?: number;
           q: string;
           queryBy?: Array<string>;
+          rank?: {
+            context?: {
+              now?: number;
+              origin?: { lat: number; lng: number };
+              sets?: Record<string, Array<string>>;
+            };
+            profile: string;
+            weights?: Record<string, number>;
+          };
           rankBy?: {
             fields?: Array<{ field: string; weight: number }>;
             text?: number;
