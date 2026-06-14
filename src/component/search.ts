@@ -186,7 +186,9 @@ export const search = query({
     let found_approximate = false;
     if (truncated) {
       found_approximate = true;
-      if (singleExactTerm && !filterIds) {
+      // terms.docCount counts the term across ALL searchFields, so it is only an
+      // exact total when the query is not narrowed by a filter or queryBy.
+      if (singleExactTerm && !filterIds && !args.queryBy) {
         const termRow = await ctx.db
           .query("terms")
           .withIndex("by_collection_term", (q) =>
