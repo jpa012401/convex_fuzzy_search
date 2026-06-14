@@ -31,7 +31,21 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      backfillFacetCountsPage: FunctionReference<
+        "mutation",
+        "internal",
+        { batch?: number; collection: string; cursor?: string | null },
+        any,
+        Name
+      >;
       backfillFiltersPage: FunctionReference<
+        "mutation",
+        "internal",
+        { batch?: number; collection: string; cursor?: string | null },
+        any,
+        Name
+      >;
+      backfillSortIndexPage: FunctionReference<
         "mutation",
         "internal",
         { batch?: number; collection: string; cursor?: string | null },
@@ -48,6 +62,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           filterFields?: Array<{ field: string; type: "string" | "number" }>;
           name: string;
           searchFields: Array<string>;
+          sortSpecs?: Array<Array<{ field: string; order: "asc" | "desc" }>>;
           storedFields?: "all" | Array<string>;
         },
         any,
@@ -87,6 +102,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           };
           sortBy?: Array<{ field: string; order: "asc" | "desc" }>;
         },
+        any,
+        Name
+      >;
+    };
+    stats: {
+      stats: FunctionReference<
+        "query",
+        "internal",
+        { collection: string },
         any,
         Name
       >;

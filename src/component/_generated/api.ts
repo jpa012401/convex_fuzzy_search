@@ -11,6 +11,7 @@
 import type * as backfill from "../backfill.js";
 import type * as collections from "../collections.js";
 import type * as counters from "../counters.js";
+import type * as facetCounts from "../facetCounts.js";
 import type * as filter from "../filter.js";
 import type * as fuzzy from "../fuzzy.js";
 import type * as highlight from "../highlight.js";
@@ -18,7 +19,10 @@ import type * as http from "../http.js";
 import type * as matching from "../matching.js";
 import type * as ranking from "../ranking.js";
 import type * as search from "../search.js";
+import type * as sortIndex from "../sortIndex.js";
+import type * as stats from "../stats.js";
 import type * as terms from "../terms.js";
+import type * as textSearch from "../textSearch.js";
 import type * as tokenizer from "../tokenizer.js";
 import type * as types from "../types.js";
 import type * as write from "../write.js";
@@ -34,6 +38,7 @@ const fullApi: ApiFromModules<{
   backfill: typeof backfill;
   collections: typeof collections;
   counters: typeof counters;
+  facetCounts: typeof facetCounts;
   filter: typeof filter;
   fuzzy: typeof fuzzy;
   highlight: typeof highlight;
@@ -41,7 +46,10 @@ const fullApi: ApiFromModules<{
   matching: typeof matching;
   ranking: typeof ranking;
   search: typeof search;
+  sortIndex: typeof sortIndex;
+  stats: typeof stats;
   terms: typeof terms;
+  textSearch: typeof textSearch;
   tokenizer: typeof tokenizer;
   types: typeof types;
   write: typeof write;
@@ -75,4 +83,5 @@ export const internal: FilterApi<
 
 export const components = componentsGeneric() as unknown as {
   docCount: import("@convex-dev/aggregate/_generated/component.js").ComponentApi<"docCount">;
+  sortIndex: import("@convex-dev/aggregate/_generated/component.js").ComponentApi<"sortIndex">;
 };

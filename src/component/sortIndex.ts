@@ -86,13 +86,26 @@ export async function pageSortedDocIds(
   limit: number,
 ): Promise<string[]> {
   const namespace = ns(collection, specId);
+  const tTotal = Date.now(); // [perf] temporary instrumentation — remove later
   const total = await sortAgg.count(ctx, { namespace });
+  const totalMs = Date.now() - tTotal; // [perf]
+  const tAt = Date.now(); // [perf]
   const ids: string[] = [];
   for (let i = 0; i < limit && offset + i < total; i++) {
     const item = await sortAgg.at(ctx, offset + i, { namespace });
     ids.push(item.id);
   }
+  console.log(`[perf] pageSortedDocIds spec=${specId} offset=${offset} limit=${limit} total=${total} count_ms=${totalMs} at_loop_ms=${Date.now() - tAt} (${ids.length} at() calls)`); // [perf]
   return ids;
+}
+
+// Number of indexed entries for one spec (validation: should equal out_of).
+export async function sortSpecCount(
+  ctx: QueryCtx,
+  collection: string,
+  specId: string,
+): Promise<number> {
+  return await sortAgg.count(ctx, { namespace: ns(collection, specId) });
 }
 
 // Empty every declared spec's namespace for a collection (deleteCollection).

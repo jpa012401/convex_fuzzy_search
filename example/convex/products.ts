@@ -231,6 +231,12 @@ export const backfillSortIndex = mutation({
   },
 });
 
+// Index-health snapshot for the validation panel in the storefront.
+export const indexStats = query({
+  args: {},
+  handler: async (ctx) => search.stats(ctx, COLLECTION),
+});
+
 // --- query wrapper ---------------------------------------------------------
 export const searchProducts = query({
   args: {

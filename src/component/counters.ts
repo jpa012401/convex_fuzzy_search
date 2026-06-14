@@ -49,12 +49,17 @@ export async function pageDocIds(
   offset: number,
   limit: number,
 ): Promise<string[]> {
+  const tTotal = Date.now(); // [perf] temporary instrumentation — remove later
   const total = await docAgg.count(ctx, { namespace: collection });
+  const totalMs = Date.now() - tTotal; // [perf]
+  const tAt = Date.now(); // [perf]
   const ids: string[] = [];
   for (let i = 0; i < limit && offset + i < total; i++) {
     const item = await docAgg.at(ctx, offset + i, { namespace: collection });
     ids.push(item.id);
   }
+  const atMs = Date.now() - tAt; // [perf]
+  console.log(`[perf] pageDocIds offset=${offset} limit=${limit} total=${total} count_ms=${totalMs} at_loop_ms=${atMs} (${ids.length} at() calls)`); // [perf]
   return ids;
 }
 

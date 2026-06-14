@@ -128,6 +128,20 @@ export class FuzzySearch {
     return ctx.runMutation(this.component.backfill.backfillFacetCountsPage, args);
   }
 
+  // Index-health snapshot: the live counts held in the aggregate/counter
+  // components. For a fully-backfilled collection every facet `total` and every
+  // sort-spec `count` equals `out_of`. Useful for validating a migration.
+  async stats(
+    ctx: QueryCtx,
+    collection: string,
+  ): Promise<{
+    out_of: number;
+    facets: { field: string; distinctValues: number; total: number }[];
+    sortSpecs: { specId: string; count: number }[];
+  }> {
+    return ctx.runQuery(this.component.stats.stats, { collection });
+  }
+
   async search(
     ctx: QueryCtx,
     args: {

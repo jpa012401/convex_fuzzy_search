@@ -37,10 +37,15 @@ export function Storefront() {
   // Instant (re-seed-free) category boost via stored cat_<Category> fields.
   const [boostCats, setBoostCats] = useState<string[]>([]);
   const [catWeight, setCatWeight] = useState(0);
+  // Master switch for weighted ranking. When OFF, no `rankBy` is sent, so an
+  // unfiltered browse stays on the lean (counter-paged) path instead of the
+  // full-collection load that a live weighted blend requires.
+  const [rankEnabled, setRankEnabled] = useState(false);
   const seed = useMutation(api.products.seed);
   const startSeed = useMutation(api.products.startSeed);
   const profile = useQuery(api.products.getProfile);
   const setProfile = useMutation(api.products.setProfile);
+  const indexStats = useQuery(api.products.indexStats);
   const [loadMsg, setLoadMsg] = useState<string | null>(null);
   const [prefsMsg, setPrefsMsg] = useState<string | null>(null);
 
@@ -58,6 +63,19 @@ export function Storefront() {
   };
 
   const filterBy = buildFilterBy(selected);
+  // Only send rankBy when the switch is on AND there is no explicit sortBy —
+  // otherwise omit it so the query can take a lean (indexed) retrieval path.
+  const rankBy =
+    rankEnabled && !SORTS[sort]
+      ? {
+          text: textWeight,
+          fields: [
+            { field: "popularity", weight: popWeight },
+            { field: "affinity", weight: affWeight },
+            ...boostCats.map((c) => ({ field: `cat_${c}`, weight: catWeight })),
+          ],
+        }
+      : undefined;
   const result = useQuery(api.products.searchProducts, {
     q,
     page,
@@ -65,14 +83,7 @@ export function Storefront() {
     filterBy,
     facetBy: ["brand", "category"],
     sortBy: SORTS[sort],
-    rankBy: {
-      text: textWeight,
-      fields: [
-        { field: "popularity", weight: popWeight },
-        { field: "affinity", weight: affWeight },
-        ...boostCats.map((c) => ({ field: `cat_${c}`, weight: catWeight })),
-      ],
-    },
+    rankBy,
   });
 
   const totalPages = result ? Math.max(1, Math.ceil(result.found / PER_PAGE)) : 1;
@@ -99,8 +110,21 @@ export function Storefront() {
           </select>
           <button onClick={() => seed()}>Seed 6</button>
           <button onClick={onLoad5k}>Load 5k</button>
+          <label
+            title="When off, no rankBy is sent — unfiltered browse stays on the fast indexed path. Turn on to apply weighted/preference ranking (loads the full collection)."
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginLeft: "auto" }}
+          >
+            <input
+              type="checkbox"
+              checked={rankEnabled}
+              onChange={(e) => { setRankEnabled(e.target.checked); setPage(1); }}
+            />
+            Weighted ranking
+          </label>
         </div>
         {loadMsg && <p style={{ fontSize: 13, color: "#888" }}>{loadMsg}</p>}
+
+        <IndexStats stats={indexStats} />
 
         <PreferencesEditor profile={profile} onSave={onSavePrefs} status={prefsMsg} />
 
@@ -111,7 +135,7 @@ export function Storefront() {
           onText={(w) => { setTextWeight(w); setPage(1); }}
           onPop={(w) => { setPopWeight(w); setPage(1); }}
           onAff={(w) => { setAffWeight(w); setPage(1); }}
-          active={sort === "relevance"}
+          active={rankEnabled && sort === "relevance"}
         />
 
         <InstantCategoryBoost
@@ -119,7 +143,7 @@ export function Storefront() {
           weight={catWeight}
           onToggle={(c) => { setBoostCats((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c])); setPage(1); }}
           onWeight={(w) => { setCatWeight(w); setPage(1); }}
-          active={sort === "relevance"}
+          active={rankEnabled && sort === "relevance"}
         />
 
         <p>
@@ -133,6 +157,79 @@ export function Storefront() {
           <span>Page {page} / {totalPages}</span>
           <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Validation panel: live counts held in the component's aggregate/counter
+// stores. For a fully-backfilled collection every facet `total` and every
+// sort-spec `count` equals `out_of`; a mismatch is flagged (needs backfill).
+function IndexStats({
+  stats,
+}: {
+  stats:
+    | {
+        out_of: number;
+        facets: { field: string; distinctValues: number; total: number }[];
+        sortSpecs: { specId: string; count: number }[];
+      }
+    | undefined;
+}) {
+  if (!stats) return null;
+  // Sort specs MUST equal out_of (every doc is indexed in every spec). A facet
+  // total is the number of docs that HAVE that field, which can legitimately be
+  // ≤ out_of for a sparse field — so it's only flagged when it's 0 (likely not
+  // backfilled / never written), never for a partial count.
+  const sortMark = (n: number) =>
+    n === stats.out_of
+      ? <span style={{ color: "#2e7d32" }}>✓</span>
+      : <span style={{ color: "#c62828" }}>✗ needs backfill</span>;
+  const facetMark = (n: number) =>
+    n === stats.out_of ? <span style={{ color: "#2e7d32" }}>✓ all</span>
+    : n > 0 ? <span style={{ color: "#999" }}>partial (sparse field?)</span>
+    : <span style={{ color: "#c62828" }}>✗ empty — needs backfill?</span>;
+  const row = { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, lineHeight: 1.7 } as const;
+  return (
+    <div
+      style={{
+        margin: "12px 0",
+        padding: 12,
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        background: "#fafafa",
+        color: "#222",
+        maxWidth: 560,
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>
+        Index validation (live aggregate / counter counts)
+      </div>
+      <div style={row}>
+        <span><strong>Documents</strong> (docCount aggregate / <code>out_of</code>)</span>
+        <span>{stats.out_of}</span>
+      </div>
+      <div style={{ fontWeight: 600, fontSize: 12, marginTop: 8 }}>Facet counters</div>
+      {stats.facets.length === 0 && <div style={{ fontSize: 12, color: "#999" }}>none declared</div>}
+      {stats.facets.map((f) => (
+        <div key={f.field} style={row}>
+          <span>{f.field} · {f.distinctValues} values</span>
+          <span>total {f.total} {facetMark(f.total)}</span>
+        </div>
+      ))}
+      <div style={{ fontWeight: 600, fontSize: 12, marginTop: 8 }}>Sort index</div>
+      {stats.sortSpecs.length === 0 && <div style={{ fontSize: 12, color: "#999" }}>none declared</div>}
+      {stats.sortSpecs.map((s) => (
+        <div key={s.specId} style={row}>
+          <span><code>{s.specId}</code></span>
+          <span>{s.count} entries {sortMark(s.count)}</span>
+        </div>
+      ))}
+      <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>
+        Sort counts must equal Documents (every doc is indexed in every spec).
+        Facet totals count only docs that HAVE the field, so a partial total is
+        normal for a sparse field; an empty (0) total usually means it was never
+        written or needs a backfill.
       </div>
     </div>
   );
