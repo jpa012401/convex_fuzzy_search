@@ -46,6 +46,14 @@ export const searchProducts = query({
     perPage: v.optional(v.number()),
     filterBy: v.optional(v.string()),
     facetBy: v.optional(v.array(v.string())),
+    sortBy: v.optional(
+      v.array(
+        v.object({
+          field: v.string(),
+          order: v.union(v.literal("asc"), v.literal("desc")),
+        }),
+      ),
+    ),
   },
   handler: async (ctx, args) =>
     search.search(ctx, { collection: COLLECTION, ...args }),
