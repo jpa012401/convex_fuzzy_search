@@ -68,15 +68,17 @@ export async function matchTokens(
   }
 
   // 3. Collect driver postings (budget-capped) -> docId -> best driver score.
+  //    Stream with `for await` and stop at the budget so we actually READ at
+  //    most `budget` rows — `.collect()` would read every posting of a hot term
+  //    before the cap could apply, blowing the per-query read limit.
   const driverScore = new Map<string, number>();
   let read = 0;
   let truncated = false;
   outer: for (const [term, c] of driver.candidates) {
-    const rows = await ctx.db
+    const stream = ctx.db
       .query("postings")
-      .withIndex("by_collection_term", (q) => q.eq("collection", collection).eq("term", term))
-      .collect();
-    for (const r of rows) {
+      .withIndex("by_collection_term", (q) => q.eq("collection", collection).eq("term", term));
+    for await (const r of stream) {
       if (read >= budget) { truncated = true; break outer; }
       read++;
       if (queryBy && !queryBy.includes(r.field)) continue;
