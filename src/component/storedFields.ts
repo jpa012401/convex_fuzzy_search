@@ -1,7 +1,4 @@
-type RankTerm =
-  | { type: "geoDistance"; latField: string; lngField: string }
-  | { type: "relevance" }
-  | { type: string; field: string };
+import type { RankTerm } from "./schema";
 
 type CollectionConfig = {
   searchFields: string[];
@@ -23,7 +20,7 @@ export function indexRelevantFields(c: CollectionConfig): string[] {
     for (const term of profile.terms) {
       if (term.type === "geoDistance") { set.add(term.latField); set.add(term.lngField); }
       else if (term.type === "relevance") { /* no field */ }
-      else set.add((term as { field: string }).field);
+      else set.add(term.field);
     }
   }
   return [...set];
