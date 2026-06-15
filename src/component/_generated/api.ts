@@ -8,7 +8,6 @@
  * @module
  */
 
-import type * as backfill from "../backfill.js";
 import type * as collections from "../collections.js";
 import type * as configSync from "../configSync.js";
 import type * as counters from "../counters.js";
@@ -39,7 +38,6 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
-  backfill: typeof backfill;
   collections: typeof collections;
   configSync: typeof configSync;
   counters: typeof counters;

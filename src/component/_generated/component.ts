@@ -23,36 +23,6 @@ import type { FunctionReference } from "convex/server";
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
-    backfill: {
-      backfillCounterPage: FunctionReference<
-        "mutation",
-        "internal",
-        { batch?: number; collection: string; cursor?: string | null },
-        any,
-        Name
-      >;
-      backfillFacetCountsPage: FunctionReference<
-        "mutation",
-        "internal",
-        { batch?: number; collection: string; cursor?: string | null },
-        any,
-        Name
-      >;
-      backfillFiltersPage: FunctionReference<
-        "mutation",
-        "internal",
-        { batch?: number; collection: string; cursor?: string | null },
-        any,
-        Name
-      >;
-      backfillSortIndexPage: FunctionReference<
-        "mutation",
-        "internal",
-        { batch?: number; collection: string; cursor?: string | null },
-        any,
-        Name
-      >;
-    };
     collections: {
       createCollection: FunctionReference<
         "mutation",
