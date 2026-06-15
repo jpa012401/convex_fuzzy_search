@@ -128,10 +128,11 @@ export const seed = mutation({
 // NOTE on resetting at scale: the component's deleteCollection reads every
 // index row (postings/terms/trigrams) for the collection in ONE mutation, which
 // exceeds Convex's 4096-reads-per-call limit once a few hundred docs are
-// indexed. So we avoid deleting a large collection: re-seeding the deterministic
-// ids just UPSERTS (replace semantics). We only drop+recreate when the existing
-// collection has the wrong config (e.g. the tiny 6-product seed), where the
-// delete is cheap. (A scalable batched deleteCollection is a Phase 4 task.)
+// indexed. So we never delete a large collection: re-seeding the deterministic
+// ids just UPSERTS (replace semantics), and sync() reconciles config in place.
+// Only the small `seed` mutation does an explicit drop+sync for a clean reset,
+// where the delete is cheap at 6 docs. (A scalable batched deleteCollection is
+// a Phase 4 task.)
 
 
 // Indexes one batch, then schedules the next — a self-chaining background load.
@@ -165,14 +166,12 @@ export const startSeed = mutation({
   handler: async (ctx, args) => {
     const total = args.total ?? 5000;
     const batch = args.batch ?? 50;
-    const c = await search.getCollection(ctx, COLLECTION);
-    const hasFullConfig = !!c?.filterFields?.some((f: any) => f.field === "affinity");
-    if (!c) {
-      await search.sync(ctx);
-    } else if (!hasFullConfig) {
-      await search.deleteCollection(ctx, COLLECTION); // small wrong-config collection
-      await search.sync(ctx);
-    }
+    // sync() is idempotent: it creates the collection if missing and reconciles
+    // config in place otherwise. We never drop+recreate a large collection here —
+    // deleteCollection reads every index row in one mutation and would exceed
+    // Convex's 4096-reads-per-call limit once a few hundred docs are indexed
+    // (re-seeding the deterministic ids just upserts with replace semantics).
+    await search.sync(ctx);
     await ctx.scheduler.runAfter(0, api.products.seedChain, { start: 0, total, batch });
     return { scheduled: total, batch };
   },
