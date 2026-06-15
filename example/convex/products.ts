@@ -49,7 +49,11 @@ const search = new FuzzySearch(components.fuzzySearch, {
   collections: {
     products: {
       searchFields: ["name", "description", "brand", "category"],
-      storedFields: "derived",
+      // "all" keeps serving-only fields (e.g. image) in the component snapshot so
+      // the storefront can render them from search hits. Switch to "derived" once
+      // the app hydrates serving fields from its own table (the id-results work),
+      // since "derived" projects away anything not referenced by an index role.
+      storedFields: "all",
       filterFields: FILTER_FIELDS,
       facetFields: FACET_FIELDS,
       sortSpecs: SORT_SPECS,
