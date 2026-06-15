@@ -10,4 +10,6 @@ export default defineSchema({
     preferredBrands: v.array(v.string()),
     pastSearchTerms: v.array(v.string()),
   }).index("by_key", ["key"]),
+  // The app owns the serving copy of products; the component holds only the index.
+  productDocs: defineTable({ docId: v.string(), doc: v.any() }).index("by_docId", ["docId"]),
 });

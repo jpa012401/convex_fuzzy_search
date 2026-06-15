@@ -1,4 +1,4 @@
-import { action, mutation, query, QueryCtx } from "./_generated/server";
+import { action, mutation, query, QueryCtx, MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { components, api } from "./_generated/api";
 import { FuzzySearch } from "@elevatech/fuzzy-search";
@@ -49,11 +49,8 @@ const search = new FuzzySearch(components.fuzzySearch, {
   collections: {
     products: {
       searchFields: ["name", "description", "brand", "category"],
-      // "all" keeps serving-only fields (e.g. image) in the component snapshot so
-      // the storefront can render them from search hits. Switch to "derived" once
-      // the app hydrates serving fields from its own table (the id-results work),
-      // since "derived" projects away anything not referenced by an index role.
-      storedFields: "all",
+      // app hydrates serving fields from productDocs; component stores only the index-relevant projection
+      storedFields: "derived",
       filterFields: FILTER_FIELDS,
       facetFields: FACET_FIELDS,
       sortSpecs: SORT_SPECS,
@@ -66,6 +63,25 @@ export const sync = mutation({
   args: {},
   handler: async (ctx) => search.sync(ctx),
 });
+
+// The app owns the serving copy: write each doc to productDocs alongside the
+// component upsert, so search results can be hydrated by id afterwards.
+async function putDocs(ctx: MutationCtx, docs: { id: string; doc: Record<string, unknown> }[]) {
+  for (const { id, doc } of docs) {
+    const existing = await ctx.db.query("productDocs").withIndex("by_docId", (q) => q.eq("docId", id)).unique();
+    if (existing) await ctx.db.patch(existing._id, { doc });
+    else await ctx.db.insert("productDocs", { docId: id, doc });
+  }
+}
+
+// Joins the component's id-only hits back to the app's serving docs, preserving
+// the returned order. Adds a `document` field shaped like what ProductGrid renders.
+async function hydrate(ctx: QueryCtx, hits: { id: string; score: number; highlight: any }[]) {
+  const rows = await Promise.all(
+    hits.map((h) => ctx.db.query("productDocs").withIndex("by_docId", (q) => q.eq("docId", h.id)).unique()),
+  );
+  return hits.map((h, i) => ({ ...h, document: (rows[i]?.doc ?? {}) as Record<string, unknown> }));
+}
 
 // --- editable personalization profile --------------------------------------
 async function loadProfile(ctx: QueryCtx): Promise<Profile> {
@@ -123,6 +139,7 @@ export const seed = mutation({
       collection: COLLECTION,
       docs: SAMPLE.map(({ id, ...rest }) => ({ id, doc: { id, ...rest } })),
     });
+    await putDocs(ctx, SAMPLE.map(({ id, ...rest }) => ({ id, doc: { id, ...rest } })));
     return { seeded: SAMPLE.length };
   },
 });
@@ -150,10 +167,9 @@ export const seedChain = mutation({
   handler: async (ctx, { start, total, batch }) => {
     const count = Math.min(batch, total - start);
     const profile = await loadProfile(ctx); // affinity scored against current prefs
-    await search.upsertMany(ctx, {
-      collection: COLLECTION,
-      docs: generateRange(start, count, profile),
-    });
+    const docs = generateRange(start, count, profile);
+    await search.upsertMany(ctx, { collection: COLLECTION, docs });
+    await putDocs(ctx, docs);
     const next = start + count;
     if (next < total) {
       await ctx.scheduler.runAfter(0, api.products.seedChain, { start: next, total, batch });
@@ -299,8 +315,10 @@ export const searchProducts = query({
       }),
     ),
   },
-  handler: async (ctx, args) =>
-    search.search(ctx, { collection: COLLECTION, ...args }),
+  handler: async (ctx, args) => {
+    const r = await search.search(ctx, { collection: COLLECTION, ...args });
+    return { ...r, hits: await hydrate(ctx, r.hits) };
+  },
 });
 
 // --- benchmark harness -----------------------------------------------------
