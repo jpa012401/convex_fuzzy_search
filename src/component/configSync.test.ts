@@ -45,4 +45,34 @@ describe("applyCollectionConfig", () => {
     const r2 = await t.mutation(api.configSync.applyCollectionConfig, { config: { name: "p", searchFields: ["n"], storedFields: "derived", filterFields: [{ field: "brand", type: "string" }], facetFields: ["size"] } });
     expect(r2.pendingFields.sort()).toEqual(["brand", "size"].sort()); // accumulated, deduped
   });
+
+  it("re-applying identical config adds no new pending fields (idempotent)", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    // Start from an existing collection that already has its structural fields,
+    // so a re-apply of the SAME config has nothing structurally new to flag.
+    await t.mutation(api.collections.createCollection, {
+      name: "p",
+      searchFields: ["n"],
+      storedFields: "derived",
+      filterFields: [{ field: "brand", type: "string" }],
+      facetFields: ["size"],
+      sortSpecs: [[{ field: "price", order: "asc" }]],
+    });
+    const config = {
+      name: "p",
+      searchFields: ["n"],
+      storedFields: "derived" as const,
+      filterFields: [{ field: "brand", type: "string" as const }],
+      facetFields: ["size"],
+      sortSpecs: [[{ field: "price", order: "asc" as const }]],
+    };
+    const r1 = await t.mutation(api.configSync.applyCollectionConfig, { config });
+    const r2 = await t.mutation(api.configSync.applyCollectionConfig, { config });
+    expect(r1.kind).toBe("update");
+    expect(r2.kind).toBe("update");
+    // Nothing structurally new vs the existing row on either apply.
+    expect(r1.pendingFields).toEqual([]);
+    expect(r2.pendingFields).toEqual([]);
+  });
 });
