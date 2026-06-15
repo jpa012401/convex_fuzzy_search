@@ -1,5 +1,6 @@
 import { mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import type { Doc as ConvexDoc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
@@ -12,17 +13,7 @@ import { indexRelevantFields } from "./storedFields";
 
 type Doc = Record<string, unknown>;
 
-function project(
-  doc: Doc,
-  col: {
-    storedFields: "all" | "derived" | string[];
-    searchFields: string[];
-    filterFields?: { field: string; type: "string" | "number" }[];
-    facetFields?: string[];
-    sortSpecs?: { field: string; order: "asc" | "desc" }[][];
-    rankProfiles?: Record<string, any>;
-  },
-): Doc {
+function project(doc: Doc, col: ConvexDoc<"collections">): Doc {
   const storedFields = col.storedFields;
   if (storedFields === "all") return doc;
   const keep = storedFields === "derived" ? indexRelevantFields(col) : storedFields;

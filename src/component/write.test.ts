@@ -154,6 +154,41 @@ describe("write path", () => {
     expect(stored).toEqual({ title: "t", extra: "kept" });
   });
 
+  it("derived projection keeps rank-only fields (geo lat/lng) for query-time re-rank", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    registerAggregate(t, "sortIndex");
+    await t.mutation(api.collections.createCollection, {
+      name: "geo",
+      searchFields: ["title"],
+      storedFields: "derived",
+      sortSpecs: [[{ field: "rank", order: "asc" }]],
+      rankProfiles: {
+        near: {
+          base: "rank:asc",
+          terms: [
+            { id: "g", type: "geoDistance", weight: 1, latField: "lat", lngField: "lng", maxKm: 10 },
+          ],
+        },
+      },
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "geo",
+      id: "p1",
+      doc: { title: "shop", rank: 1, lat: 40.0, lng: -73.0, junk: "drop me" },
+    });
+    const stored = await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q) => q.eq("collection", "geo").eq("docId", "p1"))
+        .unique();
+      return row?.stored as Record<string, unknown>;
+    });
+    // lat/lng referenced only by the rankProfile -> kept; junk -> dropped; title+rank kept.
+    expect(stored).toMatchObject({ title: "shop", rank: 1, lat: 40.0, lng: -73.0 });
+    expect(stored.junk).toBeUndefined();
+  });
+
   it("stores a doc with no indexable searchFields but makes it unmatchable", async () => {
     const t = await setup();
     await t.mutation(api.write.upsert, {
