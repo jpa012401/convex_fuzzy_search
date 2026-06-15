@@ -11,14 +11,21 @@ export function PlaceCard({ hit, origin, now }: { hit: Hit; origin: { lat: numbe
   const d = hit.document;
   const dist = d.lat != null ? kmBetween(origin, { lat: d.lat, lng: d.lng }) : null;
   const daysOpen = d.openedAt != null ? Math.round((now - d.openedAt) / 86_400_000) : null;
+  const openedDate = d.openedAt != null ? new Date(d.openedAt).toISOString().slice(0, 10) : null;
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
       <img src={d.image} alt={d.name} style={{ width: "100%", borderRadius: 4 }} />
       <div style={{ fontWeight: 600 }}>{d.name}</div>
       <div style={{ color: "#666", fontSize: 13 }}>{d.cuisine} · {"$".repeat(d.priceLevel ?? 1)} · ★{d.rating}</div>
       <div style={{ fontSize: 12, color: "#888" }}>
-        {dist != null ? `${dist} km away` : "—"}{daysOpen != null ? ` · opened ${daysOpen}d ago` : ""} · score {hit.score}
+        {dist != null ? `${dist} km away` : "—"} · score {hit.score}
       </div>
+      {openedDate != null && (
+        // Concrete opened date (UTC) alongside the relative age, for validating recencyDecay.
+        <div style={{ fontSize: 12, color: "#888" }}>
+          opened {openedDate} ({daysOpen}d ago)
+        </div>
+      )}
     </div>
   );
 }
