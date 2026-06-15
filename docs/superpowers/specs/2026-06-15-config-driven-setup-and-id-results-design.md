@@ -85,15 +85,20 @@ When sync marks a structural field **pending**, existing component docs lack tha
 
 ```ts
 {
-  hits: { id: string; score: number }[];   // was: full doc contents
+  // hit carries id + score + highlight; NOT the full document contents
+  hits: { id: string; score: number; highlight: Record<string, { snippet: string; matched_tokens: string[] }> }[];
   found: number;
-  out_of: number;
+  found_approximate: boolean;
+  reranked: boolean;
   page: number;
-  facetCounts?: { field: string; counts: { value: string; count: number }[] }[];
+  out_of: number;
+  search_time_ms: number;
+  facet_counts: { field_name: string; counts: { value: string; count: number }[] }[];
 }
 ```
 
-- Text matching, `filterBy`, `facetBy`, `sortBy`, and **windowed re-rank** all run inside the component as today, against the index-relevant fields — unchanged logic, the only difference is what is *returned*.
+- **Highlight is retained.** The component still computes highlight snippets from its index-relevant `searchField` text (it has that text), so each hit carries `highlight` alongside `id`/`score`. The only thing dropped from the old `Hit` is `document` (the full snapshot) — the app hydrates that.
+- Text matching, `filterBy`, `facetBy`, `sortBy`, and **windowed re-rank** all run inside the component as today, against the index-relevant fields — unchanged logic, the only difference is that `document` is no longer returned.
 - **App hydration contract:** the app takes `hits.map(h => h.id)`, point-looks-up each in its own table, and **must preserve `hits` order** (do not let the join re-sort). Hydration is **O(perPage)**, indexed — not O(total docs).
 
 ## Architecture / data flow
