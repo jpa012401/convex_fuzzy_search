@@ -104,12 +104,7 @@ export const search = query({
     // ---- LEAN BROWSE: empty q, no filter/facets/custom order -> page off the aggregate.
     if (tokens.length === 0 && !hasFilter && !hasFacets && !hasCustomOrder) {
       const ids = await pageDocIds(ctx, args.collection, (page - 1) * perPage, perPage);
-      const byId = await loadDocs(ctx, args.collection, ids);
-      const hits: Hit[] = ids.map((id) => ({
-        document: (byId.get(id) ?? {}) as Record<string, unknown>,
-        highlight: {},
-        text_match: 0,
-      }));
+      const hits: Hit[] = ids.map((id) => ({ id, score: 0, highlight: {} }));
       return { found: out_of, found_approximate: false, reranked: true, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
     }
 
@@ -117,12 +112,7 @@ export const search = query({
     // the aggregate and read facet counts from the write-maintained counters.
     if (tokens.length === 0 && !hasFilter && hasFacets && !hasCustomOrder) {
       const ids = await pageDocIds(ctx, args.collection, (page - 1) * perPage, perPage);
-      const byId = await loadDocs(ctx, args.collection, ids);
-      const hits: Hit[] = ids.map((id) => ({
-        document: (byId.get(id) ?? {}) as Record<string, unknown>,
-        highlight: {},
-        text_match: 0,
-      }));
+      const hits: Hit[] = ids.map((id) => ({ id, score: 0, highlight: {} }));
       const declared = new Set(collection.facetFields ?? []);
       const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
       const facet_counts: FacetCount[] = [];
@@ -149,12 +139,7 @@ export const search = query({
           (page - 1) * perPage,
           perPage,
         );
-        const byId = await loadDocs(ctx, args.collection, ids);
-        const hits: Hit[] = ids.map((id) => ({
-          document: (byId.get(id) ?? {}) as Record<string, unknown>,
-          highlight: {},
-          text_match: 0,
-        }));
+        const hits: Hit[] = ids.map((id) => ({ id, score: 0, highlight: {} }));
         const facet_counts: FacetCount[] = [];
         if (hasFacets) {
           const declared = new Set(collection.facetFields ?? []);
@@ -328,7 +313,7 @@ export const search = query({
           if (h) highlight[field] = h;
         }
       }
-      return { document: stored, highlight, text_match: rawScore(id) };
+      return { id, score: rawScore(id), highlight };
     });
 
     return { found, found_approximate, reranked, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };

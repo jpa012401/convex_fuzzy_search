@@ -73,6 +73,18 @@ describe("search", () => {
     expect(typeof r.search_time_ms).toBe("number");
   });
 
+  it("returns id + score + highlight, not document", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, { name: "books", searchFields: ["title"] });
+    await t.mutation(api.write.upsert, { collection: "books", id: "b1", doc: { title: "the great gatsby" } });
+    const r = await t.query(api.search.search, { collection: "books", q: "gatsby" });
+    expect(r.hits[0]).toMatchObject({ id: "b1" });
+    expect(typeof r.hits[0].score).toBe("number");
+    expect(r.hits[0].highlight).toBeDefined();
+    expect((r.hits[0] as any).document).toBeUndefined();
+  });
+
   it("clamps perPage to at most 250 and page to at least 1", async () => {
     const t = await setup();
     const r = await t.query(api.search.search, {
