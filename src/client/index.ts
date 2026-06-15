@@ -36,8 +36,48 @@ export type ActionCtx = Pick<
  * await search.upsert(ctx, { collection: "books", id: "1", doc: { title: "..." } });
  * ```
  */
+type CollectionConfigInput = {
+  searchFields: string[];
+  storedFields?: "all" | "derived" | string[];
+  filterFields?: { field: string; type: "string" | "number" }[];
+  facetFields?: string[];
+  sortSpecs?: { field: string; order: "asc" | "desc" }[][];
+  rankProfiles?: Record<string, { base: string; window?: number; terms: any[] }>;
+};
+
 export class FuzzySearch {
-  constructor(public component: ComponentApi) {}
+  constructor(
+    public component: ComponentApi,
+    private options?: { collections?: Record<string, CollectionConfigInput> },
+  ) {}
+
+  // Normalize configured collections into applyCollectionConfig args.
+  configEntries() {
+    const cols = this.options?.collections ?? {};
+    return Object.entries(cols).map(([name, c]) => ({
+      name,
+      searchFields: c.searchFields,
+      storedFields: c.storedFields ?? "derived",
+      filterFields: c.filterFields,
+      facetFields: c.facetFields,
+      sortSpecs: c.sortSpecs,
+      rankProfiles: c.rankProfiles,
+    }));
+  }
+
+  // Auto-apply: reconcile every configured collection's row to match code.
+  // O(1) per collection (no document reads). Returns pending fields per collection.
+  async sync(ctx: MutationCtx) {
+    const results: { name: string; pendingFields: string[] }[] = [];
+    for (const config of this.configEntries()) {
+      const r = (await ctx.runMutation(
+        this.component.configSync.applyCollectionConfig,
+        { config },
+      )) as { kind: string; pendingFields: string[] };
+      results.push({ name: config.name, pendingFields: r.pendingFields });
+    }
+    return results;
+  }
 
   async createCollection(
     ctx: MutationCtx,
