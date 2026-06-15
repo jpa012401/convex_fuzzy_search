@@ -205,7 +205,11 @@ export const startSeed = mutation({
 export const reindex = mutation({
   args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
   handler: async (ctx, { cursor, batch }) => {
-    const size = batch ?? 100;
+    // Small default batch: each replayed upsert does a clear-then-rebuild that
+    // READS the doc's whole index footprint (postings/terms/trigrams/filters),
+    // so the per-doc read cost is far higher than a fresh insert. Batches above
+    // ~10-20 risk the 4,096-reads-per-call limit on docs with many terms.
+    const size = batch ?? 10;
     const page = await ctx.db
       .query("productDocs")
       .withIndex("by_docId", (q) => (cursor == null ? q : q.gt("docId", cursor)))
