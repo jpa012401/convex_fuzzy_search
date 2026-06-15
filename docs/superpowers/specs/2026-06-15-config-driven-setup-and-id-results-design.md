@@ -113,32 +113,13 @@ config object ──▶│ client.sync(ctx)  (one internalMutation, post-deploy)
                  └────────────────────────────────────────────────────────────┘
 ```
 
-## Multi-collection search (app-side fan-out + merge)
+## Multiple collections
 
-The engine is **single-collection** by construction: every index is keyed by `[collection, ...]` and relevance (IDF) is per-collection. Searching across several collections is therefore **not** an engine feature — it is an **app-side fan-out + merge**, which this design enables for free because `search` already returns `{ id, score }` and the app already hydrates by id.
+Many collections coexist in the component (shared tables, partitioned by `collection`). **Each `search` call targets exactly one collection** (`collection: v.string()`); the app searches different collections by calling `search` separately, per collection, whenever it needs each — they are independent queries with independent result lists.
 
-```ts
-// app code — search products + articles, then hydrate each from its own table
-const results = await Promise.all(
-  ["products", "articles"].map((collection) =>
-    search.search(ctx, { collection, q }).then((r) =>
-      r.hits.map((h) => ({ ...h, collection })),   // tag each hit with its source
-    ),
-  ),
-);
-const merged = mergeStrategy(results.flat());      // app chooses the strategy
-// hydrate: group merged ids by collection, point-look-up each in its own table
-```
+This is the only multi-collection requirement: *search collection A, and separately search collection B* — not blend them into one ranked list. It works unchanged under this design; `search` returning `{ id, score }` simply means the app hydrates each call's ids against that collection's backing table.
 
-**Each hit carries its `collection`** so the app knows which table to hydrate from. The client may expose a small helper that attaches `collection` to each hit, but the merge itself stays in app code.
-
-**Cross-collection ranking caveat (must be documented):** `score` is **per-collection** — IDF is computed within a collection, so a `products` score is **not** numerically comparable to an `articles` score. Merging strictly by raw `score` biases toward whichever collection's score scale runs higher. The merge strategy is the **app's** decision; common choices:
-
-- **Sectioned** — present per-collection groups ("Products (20) / Articles (5)"); no cross-comparison needed. Cleanest and most honest.
-- **Interleaved** — round-robin N from each collection; guarantees representation regardless of score scale.
-- **Normalized merge** — app rescales each collection's scores (e.g. min-max within its result set) before sorting into one list; best blended relevance, app owns the normalization.
-
-**Rejected:** a built-in `collections: string[]` federated search. It does not improve on app-side fan-out (the merge has to happen somewhere, and only the app can decide a cross-collection ranking policy), and it cannot produce comparable scores without a normalization layer that does not exist. Multiple component **instances** (aggregate-style) are likewise **not** a multi-search feature — a query hits one instance at a time, exactly like the shared-table model, so they add isolation cost without changing the fan-out-and-merge story.
+**Explicitly out of scope:** blended/federated search that merges several collections into one ranked list. Relevance (IDF) is per-collection, so scores are not comparable across collections; combining them would require an app-side merge/normalization policy. Not needed here — the requirement is one collection per call. (If a blended view is ever wanted, it stays an app-side fan-out + merge, never an engine feature; and multiple component instances would not help, since a query still hits one index at a time.)
 
 ## Cost & scaling
 
@@ -173,7 +154,7 @@ The only genuinely heavy operation remains **reindexing existing documents when 
 - No "field not live until backfilled" gate; partial-results window during reindex is accepted.
 - No reactive triggers; writes stay explicit.
 - Eager removal cleanup is opt-in, not default.
-- No built-in federated/multi-collection search in the engine; multi-collection is app-side fan-out + merge (component stays single-collection).
+- Each `search` call targets one collection; searching different collections = separate calls. No blended/federated multi-collection search in the engine.
 
 ## Suggested phasing (for the implementation plan)
 
