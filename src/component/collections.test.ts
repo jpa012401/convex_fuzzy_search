@@ -87,6 +87,46 @@ describe("collections", () => {
   });
 });
 
+describe("storedFields 'derived'", () => {
+  it("accepts storedFields 'derived' and stores it", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "p",
+      searchFields: ["name"],
+      storedFields: "derived",
+      filterFields: [{ field: "brand", type: "string" }],
+    });
+    const c = await t.query(api.collections.getCollection, { name: "p" });
+    expect(c?.storedFields).toBe("derived");
+  });
+
+  it("'derived' skips the explicit-projection consistency check", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    // With an EXPLICIT array projection that omits a filterField, createCollection
+    // throws. With "derived", the same shape is accepted (projection is computed,
+    // not hand-specified).
+    await expect(
+      t.mutation(api.collections.createCollection, {
+        name: "explicit",
+        searchFields: ["name"],
+        storedFields: ["name"], // omits "brand" -> must throw
+        filterFields: [{ field: "brand", type: "string" }],
+      }),
+    ).rejects.toThrow(/storedFields/);
+    // Same config but "derived" -> accepted.
+    await t.mutation(api.collections.createCollection, {
+      name: "derived",
+      searchFields: ["name"],
+      storedFields: "derived",
+      filterFields: [{ field: "brand", type: "string" }],
+    });
+    const c = await t.query(api.collections.getCollection, { name: "derived" });
+    expect(c?.storedFields).toBe("derived");
+  });
+});
+
 describe("filter/facet field config", () => {
   it("stores filterFields and facetFields", async () => {
     const t = convexTest(schema, modules);
