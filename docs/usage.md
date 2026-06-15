@@ -322,11 +322,58 @@ on write — pre-existing docs return **zero results until re-upserted**. Pick a
 rewrites one row per `filterFields` entry, so wide configs use a smaller batch —
 the example uses `100`).
 
-> **New config on an existing collection** (e.g. adding `sortSpecs` or
-> `rankProfiles`): `createCollection` throws if the collection exists, so the
-> config only takes effect on a freshly-created collection. For a large
-> collection where `deleteCollection` would exceed read limits, recreate by
-> re-seeding into a fresh deployment (the example app does this).
+> **Changing config on an existing collection:** use `search.sync(ctx)` — it
+> applies metadata changes in place and flags structural additions for reindex.
+> See [Changing a collection's fields](#changing-a-collections-fields-config-sync--reindex).
+> (`createCollection` still throws if the collection already exists; the config
+> path is `sync`.)
+
+## Changing a collection's fields (config sync & reindex)
+
+Declare collections in code and apply changes with `sync` instead of calling
+`createCollection` by hand:
+
+```ts
+const search = new FuzzySearch(components.fuzzySearch, {
+  collections: {
+    products: {
+      searchFields: ["name", "description"],
+      storedFields: "derived", // component stores only index-relevant fields
+      filterFields: [{ field: "brand", type: "string" }],
+      rankProfiles: { /* ... */ },
+    },
+  },
+});
+
+// Wire once; run after deploy.
+export const sync = mutation({ args: {}, handler: (ctx) => search.sync(ctx) });
+```
+
+`sync(ctx)` is idempotent and reads no documents. Two cases when you edit the config:
+
+- **Metadata change** (rankProfiles, weights, searchFields): applies in place,
+  O(1). Nothing else to do.
+- **Structural addition** (new `filterFields` / `facetFields` / `sortSpecs`):
+  `sync` updates the row and marks the field *pending* — existing documents have
+  no index rows for it yet. Reindex them, then clear the flag:
+
+```ts
+await search.pendingFields(ctx, "products"); // -> ["brand"] while pending
+// Replay your own docs through upsert (rebuilds the new field's index rows),
+// paging a table you own — see the example app's self-chaining `reindex`.
+await search.clearPending(ctx, "products");  // mark fully reindexed
+```
+
+Until the reindex completes, queries on the new field return **incomplete**
+(not erroneous) results. Removing a field is lazy — the dead index rows are
+harmless and left in place.
+
+Reindex is **app-driven**: with `storedFields: "derived"` the component keeps
+only index-relevant fields, so it cannot rebuild a new field from its own
+storage — the app replays its serving copy of each document back through
+`upsert`/`upsertMany`. Because writes are explicit (like the aggregate
+component), **dashboard edits and `npx convex import` to your app tables do not
+reach the component** — replay the affected documents to resync.
 
 ## Gotchas
 
