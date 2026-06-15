@@ -26,7 +26,14 @@ export function ProductGrid({ hits, showScore }: { hits: Hit[]; showScore?: bool
           <div>${h.document.price}</div>
           {showScore && (
             <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
-              pop {h.document.popularity ?? "—"} · aff {h.document.affinity ?? "—"} · match {h.score}
+              <div>pop {h.document.popularity ?? "—"} · aff {h.document.affinity ?? "—"} · match {h.score}</div>
+              {h.document.releasedAt != null && (
+                // Concrete released date (UTC) + relative age, for validating recencyDecay.
+                <div>
+                  released {new Date(h.document.releasedAt).toISOString().slice(0, 10)}
+                  {h.document.releasedDaysAgo != null ? ` (${h.document.releasedDaysAgo}d ago)` : ""}
+                </div>
+              )}
             </div>
           )}
         </div>
