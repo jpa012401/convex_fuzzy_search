@@ -16,6 +16,7 @@ component. For what it is and how it works internally, see
 - [Ranking profiles (configurable windowed re-rank)](#ranking-profiles)
 - [Index health (stats)](#index-health-stats)
 - [Migration & backfills](#migration--backfills)
+- [Changing a collection's fields (config sync & reindex)](#changing-a-collections-fields-config-sync--reindex)
 - [Gotchas](#gotchas)
 
 ---
@@ -43,8 +44,22 @@ export default app;
 import { components } from "./_generated/api";
 import { FuzzySearch } from "@elevatech/fuzzy-search";
 
-const search = new FuzzySearch(components.fuzzySearch);
+const search = new FuzzySearch(components.fuzzySearch, {
+  collections: {
+    products: {
+      searchFields: ["name", "description"],
+      storedFields: "derived",
+      filterFields: [{ field: "brand", type: "string" }],
+      // facetFields, sortSpecs, rankProfiles as needed
+    },
+  },
+});
 ```
+
+Apply the config after deploy with `await search.sync(ctx)` — see
+[Changing a collection's fields](#changing-a-collections-fields-config-sync--reindex).
+`createCollection` (below) remains available for programmatic / dynamic
+collections.
 
 Every method takes the Convex `ctx` first. **Mutating** methods
 (`createCollection`, `upsert*`, `delete*`, `deleteCollection`, `backfill*`) run
@@ -53,12 +68,18 @@ run in a query (or action).
 
 ## Create a collection
 
+The **recommended** path for most apps is the config object passed to the
+constructor + `search.sync(ctx)` — see
+[Changing a collection's fields](#changing-a-collections-fields-config-sync--reindex).
+`createCollection` below is the explicit / programmatic alternative (useful for
+dynamic collection names or tooling that creates collections at runtime).
+
 ```ts
 // in a mutation
 await search.createCollection(ctx, {
   name: "products",
   searchFields: ["name", "description"],   // tokenized + indexed for matching
-  storedFields: "all",                     // or string[] projection returned in hits
+  storedFields: "derived",                 // "all" | "derived" | string[] — see below
   filterFields: [
     { field: "brand", type: "string" },
     { field: "price", type: "number" },
@@ -75,7 +96,7 @@ await search.createCollection(ctx, {
 | Option | Meaning |
 | --- | --- |
 | `searchFields` | document fields tokenized + indexed for full-text matching |
-| `storedFields` | `"all"` (whole doc) or a `string[]` projection returned in `hits[].document` |
+| `storedFields` | `"all"` (store whole doc) \| `"derived"` (store only index-relevant fields; app hydrates the rest by id) \| `string[]` (explicit projection) |
 | `filterFields` | `{ field, type: "string" \| "number" }[]` — a field must be declared to appear in `filterBy` |
 | `facetFields` | `string[]` — a field must be declared to be requested via `facetBy` |
 | `sortSpecs` | `{ field, order }[][]` — composite sort orders to index (each inner array is one spec; numeric fields) |
@@ -142,11 +163,11 @@ const result = await search.search(ctx, {
   "search_time_ms": 3,
   "hits": [
     {
-      "document": { /* stored projection */ },
+      "id": "1",              // consumer-provided document id
+      "score": 5,             // raw relevance (exact > prefix > typo); 0 in browse
       "highlight": {          // one entry per searched field that matched; {} in browse
         "name": { "snippet": "Red <mark>Shoe</mark>", "matched_tokens": ["Shoe"] }
-      },
-      "text_match": 5         // RAW relevance score; higher is better (0 in browse)
+      }
     }
   ],
   "facet_counts": [
@@ -155,7 +176,12 @@ const result = await search.search(ctx, {
 }
 ```
 
-`text_match` is always the **raw** relevance score (exact > prefix > typo);
+The component returns **ids + score + highlight only** — there is no `document`
+field in hits. Hydrate full document contents from your own table using the
+returned `id` (the example app keeps a `productDocs` table and joins the returned
+ids, preserving order).
+
+`score` is always the **raw** relevance score (exact > prefix > typo);
 `rankBy` / `sortBy` / `rank` change *ordering only*, never this value.
 
 ## Filtering
