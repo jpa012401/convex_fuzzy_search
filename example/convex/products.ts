@@ -271,6 +271,34 @@ export const backfillSortIndex = mutation({
   },
 });
 
+// Replays the app-owned productDocs back through the component's upsert,
+// rebuilding index rows for any newly-added structural field, then clears the
+// collection's pending flag when done. Self-chains in the background like
+// seedChain. The PAGE SOURCE is the app's own table — the component no longer
+// holds the full serving doc, so the app drives the replay.
+export const reindex = mutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
+  handler: async (ctx, { cursor, batch }) => {
+    const size = batch ?? 100;
+    const page = await ctx.db
+      .query("productDocs")
+      .withIndex("by_docId", (q) => (cursor == null ? q : q.gt("docId", cursor)))
+      .take(size + 1);
+    const rows = page.slice(0, size);
+    await search.upsertMany(ctx, {
+      collection: COLLECTION,
+      docs: rows.map((r) => ({ id: r.docId, doc: r.doc })),
+    });
+    const done = page.length <= size;
+    if (!done) {
+      await ctx.scheduler.runAfter(0, api.products.reindex, { cursor: rows[rows.length - 1].docId, batch });
+    } else {
+      await search.clearPending(ctx, COLLECTION);
+    }
+    return { indexed: rows.length, done };
+  },
+});
+
 // Index-health snapshot for the validation panel in the storefront.
 export const indexStats = query({
   args: {},
