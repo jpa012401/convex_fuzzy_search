@@ -15,7 +15,7 @@ component. For what it is and how it works internally, see
 - [Sorting & weighted ranking](#sorting--weighted-ranking)
 - [Ranking profiles (configurable windowed re-rank)](#ranking-profiles)
 - [Index health (stats)](#index-health-stats)
-- [Migration & backfills](#migration--backfills)
+- [Migration & reindex](#migration--reindex)
 - [Changing a collection's fields (config sync & reindex)](#changing-a-collections-fields-config-sync--reindex)
 - [Gotchas](#gotchas)
 
@@ -62,7 +62,7 @@ Apply the config after deploy with `await search.sync(ctx)` — see
 collections.
 
 Every method takes the Convex `ctx` first. **Mutating** methods
-(`createCollection`, `upsert*`, `delete*`, `deleteCollection`, `backfill*`) run
+(`createCollection`, `upsert*`, `delete*`, `deleteCollection`) run
 in a mutation (or action); **read** methods (`search`, `getCollection`, `stats`)
 run in a query (or action).
 
@@ -318,42 +318,35 @@ const s = await search.stats(ctx, "products");
   every spec).
 - A **`facets[].total`** equals the number of docs that *have* that field — it can
   legitimately be `< out_of` for a sparse field, and `0` usually means the facet
-  counter was never written (needs a backfill).
+  counter was never written (needs a reindex (re-upsert the docs)).
 
-## Migration & backfills
+## Migration & reindex
 
-Indexes are written **on write**, so a collection indexed under an older version
-needs a one-time backfill (or just re-`upsert` the docs, which rebuilds
-everything). Each backfill processes one bounded page per call, returns
-`{ cursor, done }`, and is idempotent — loop it or self-chain with
-`ctx.scheduler` until `done`:
+Indexes are written **on write**, so a collection indexed under an older config —
+or one that just gained a structural field (`filterFields`/`facetFields`/`sortSpecs`)
+via `sync` — needs its existing documents replayed to build the new index rows.
+Because the component stores only the index-relevant projection (`storedFields:
+"derived"`), it can't rebuild from its own storage: **the app replays its own copy
+of each document** through `upsert`/`upsertMany`, which rebuilds every index row
+(postings, filters, facets, sort) under the current config. Then clear the flag:
 
 ```ts
-let cursor = null;
-do {
-  const r = await search.backfillFacetCountsPage(ctx, { collection: "products", cursor, batch: 100 });
-  cursor = r.cursor;
-} while (cursor !== null);
+// Page your own table and re-upsert; self-chain with ctx.scheduler until done.
+await search.upsertMany(ctx, { collection: "products", docs: pageOfDocs });
+// ...when every page has been replayed:
+await search.clearPending(ctx, "products");
 ```
 
-| Backfill | Rebuilds |
-| --- | --- |
-| `backfillCounterPage` | the `out_of` / browse doc counter |
-| `backfillFiltersPage` | the `filters` index (`filterBy`) |
-| `backfillFacetCountsPage` | the facet counters |
-| `backfillSortIndexPage` | the sort index (`sortSpecs`) — also the base of ranking profiles |
+`sync` records which fields await reindex; read them with
+`await search.pendingFields(ctx, "products")` and clear with
+`search.clearPending(...)`. See
+[Changing a collection's fields](#changing-a-collections-fields-config-sync--reindex)
+for the full flow, and the example app's `reindex` mutation for a self-chaining
+driver that pages its own `productDocs` table.
 
 Matching itself depends on the `terms`/`trigrams` tables, which are *only* built
-on write — pre-existing docs return **zero results until re-upserted**. Pick a
-`batch` that stays under the 4,096-reads-per-call limit (the filter backfill
-rewrites one row per `filterFields` entry, so wide configs use a smaller batch —
-the example uses `100`).
-
-> **Changing config on an existing collection:** use `search.sync(ctx)` — it
-> applies metadata changes in place and flags structural additions for reindex.
-> See [Changing a collection's fields](#changing-a-collections-fields-config-sync--reindex).
-> (`createCollection` still throws if the collection already exists; the config
-> path is `sync`.)
+on write — pre-existing docs return **zero results until re-upserted**. Replay in
+bounded pages (the example uses `100`) to stay under the 4,096-reads-per-call limit.
 
 ## Changing a collection's fields (config sync & reindex)
 

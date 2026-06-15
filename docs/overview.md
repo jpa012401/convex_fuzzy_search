@@ -93,8 +93,7 @@ collection:
 ### Migration
 
 Indexes are populated **on write**. A collection indexed under an older version
-needs a one-time backfill (or a re-`upsert`); each backfill is paginated and
-idempotent. See the [migration section of usage.md](./usage.md#migration--backfills).
+needs its documents replayed through `upsert` to rebuild the index rows (the app pages its own copy; the component cannot rebuild from its own storage under `storedFields: "derived"`). See the [migration section of usage.md](./usage.md#migration--reindex).
 
 ---
 
@@ -127,7 +126,7 @@ idempotent. See the [migration section of usage.md](./usage.md#migration--backfi
 | Ranking | `src/component/{ranking,score}.ts` |
 | Highlighting | `src/component/highlight.ts` |
 | Search entry | `src/component/search.ts` |
-| Backfills | `src/component/backfill.ts` |
+| Reindex (app-driven) | example `reindex` mutation + `upsert` replay |
 | Index health | `src/component/stats.ts` |
 | Client | `src/client/index.ts` |
 | Example app | `example/` |

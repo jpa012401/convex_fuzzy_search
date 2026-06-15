@@ -199,7 +199,7 @@ function LeanBoostPanel({
 }
 
 // Validation panel: live counts held in the component's aggregate/counter
-// stores. For a fully-backfilled collection every facet `total` and every
+// stores. For a fully-reindexed collection every facet `total` and every
 // sort-spec `count` equals `out_of`; a mismatch is flagged.
 function IndexStats({
   stats,
@@ -219,11 +219,11 @@ function IndexStats({
   const sortMark = (n: number) =>
     n === stats.out_of
       ? <span style={{ color: "#2e7d32" }}>✓</span>
-      : <span style={{ color: "#c62828" }}>✗ needs backfill</span>;
+      : <span style={{ color: "#c62828" }}>✗ needs reindex</span>;
   const facetMark = (n: number) =>
     n === stats.out_of ? <span style={{ color: "#2e7d32" }}>✓ all</span>
     : n > 0 ? <span style={{ color: "#999" }}>partial (sparse field?)</span>
-    : <span style={{ color: "#c62828" }}>✗ empty — needs backfill?</span>;
+    : <span style={{ color: "#c62828" }}>✗ empty — needs reindex?</span>;
   const row = { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, lineHeight: 1.7 } as const;
   return (
     <div
@@ -263,7 +263,7 @@ function IndexStats({
         Sort counts must equal Documents (every doc is indexed in every spec).
         Facet totals count only docs that HAVE the field, so a partial total is
         normal for a sparse field; an empty (0) total usually means it was never
-        written or needs a backfill.
+        written or needs a reindex.
       </div>
     </div>
   );
