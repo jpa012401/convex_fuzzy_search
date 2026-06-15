@@ -42,4 +42,20 @@ describe("diffCollection", () => {
     const d = diffCollection(base, { ...base, filterFields: [] });
     expect(d.pendingFields).toEqual([]);
   });
+
+  it("create lists all structural fields as pending", () => {
+    const d = diffCollection(null, base);
+    expect(d.kind).toBe("create");
+    expect(d.pendingFields.sort()).toEqual(["brand", "price"].sort());
+  });
+
+  it("a field newly added to two roles appears once in pendingFields", () => {
+    const start = { ...base, filterFields: [], facetFields: [] as string[] };
+    const d = diffCollection(start, {
+      ...start,
+      filterFields: [{ field: "size", type: "string" as const }],
+      facetFields: ["size"],
+    });
+    expect(d.pendingFields.filter((f) => f === "size")).toEqual(["size"]); // exactly once
+  });
 });
