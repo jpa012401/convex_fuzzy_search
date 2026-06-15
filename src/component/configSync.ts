@@ -3,12 +3,14 @@ import { loadCollection, validateCollectionConfig } from "./collections";
 import { diffCollection } from "./diffCollection";
 import { collectionConfigValidator } from "./schema";
 
+export type ApplyConfigResult = { kind: "create" | "update"; pendingFields: string[] };
+
 // Idempotent upsert of a collection row from declarative config. Computes which
 // structural fields are newly added (pendingFields) so the app can reindex.
 // Metadata changes apply in place. Does NOT read documents.
 export const applyCollectionConfig = mutation({
   args: { config: collectionConfigValidator },
-  handler: async (ctx, { config }) => {
+  handler: async (ctx, { config }): Promise<ApplyConfigResult> => {
     // applyCollectionConfig defaults storedFields to "derived" by design
     // (vs createCollection's "all"): config-synced collections store the
     // index-relevant projection rather than the whole document.

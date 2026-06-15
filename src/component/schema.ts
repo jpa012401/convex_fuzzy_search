@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import type { Infer } from "convex/values";
 
 export const rankTermValidator = v.union(
   v.object({ id: v.string(), type: v.literal("field"), weight: v.number(), field: v.string() }),
@@ -15,6 +16,9 @@ export const rankProfileValidator = v.object({
   window: v.optional(v.number()),
   terms: v.array(rankTermValidator),
 });
+
+export type RankTerm = Infer<typeof rankTermValidator>;
+export type RankProfile = Infer<typeof rankProfileValidator>;
 
 // Shared declarative collection config shape. Reused as the `config` arg of
 // configSync.applyCollectionConfig so the validator is not duplicated.

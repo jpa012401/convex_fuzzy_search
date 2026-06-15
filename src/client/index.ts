@@ -6,6 +6,8 @@ import type {
 } from "convex/server";
 import type { ComponentApi } from "../component/_generated/component.js";
 import type { SearchResult } from "../component/types.js";
+import type { RankProfile } from "../component/schema.js";
+import type { ApplyConfigResult } from "../component/configSync.js";
 
 // See example/convex/products.ts for how to use this component.
 // The reusable ctx-type helpers below are used by the FuzzySearch client.
@@ -36,13 +38,13 @@ export type ActionCtx = Pick<
  * await search.upsert(ctx, { collection: "books", id: "1", doc: { title: "..." } });
  * ```
  */
-type CollectionConfigInput = {
+export type CollectionConfigInput = {
   searchFields: string[];
   storedFields?: "all" | "derived" | string[];
   filterFields?: { field: string; type: "string" | "number" }[];
   facetFields?: string[];
   sortSpecs?: { field: string; order: "asc" | "desc" }[][];
-  rankProfiles?: Record<string, { base: string; window?: number; terms: any[] }>;
+  rankProfiles?: Record<string, RankProfile>;
 };
 
 export class FuzzySearch {
@@ -52,12 +54,12 @@ export class FuzzySearch {
   ) {}
 
   // Normalize configured collections into applyCollectionConfig args.
-  configEntries() {
+  private configEntries() {
     const cols = this.options?.collections ?? {};
     return Object.entries(cols).map(([name, c]) => ({
       name,
       searchFields: c.searchFields,
-      storedFields: c.storedFields ?? "derived",
+      storedFields: c.storedFields,
       filterFields: c.filterFields,
       facetFields: c.facetFields,
       sortSpecs: c.sortSpecs,
@@ -65,16 +67,20 @@ export class FuzzySearch {
     }));
   }
 
-  // Auto-apply: reconcile every configured collection's row to match code.
-  // O(1) per collection (no document reads). Returns pending fields per collection.
+  /**
+   * Reconcile every configured collection's row to match the code config.
+   * Idempotent and O(1) per collection (reads no documents). Metadata changes
+   * apply in place; newly-added structural fields are returned as `pendingFields`
+   * so the caller can trigger a reindex. Drive this once post-deploy.
+   */
   async sync(ctx: MutationCtx) {
-    const results: { name: string; pendingFields: string[] }[] = [];
+    const results: { name: string; kind: "create" | "update"; pendingFields: string[] }[] = [];
     for (const config of this.configEntries()) {
       const r = (await ctx.runMutation(
         this.component.configSync.applyCollectionConfig,
         { config },
-      )) as { kind: string; pendingFields: string[] };
-      results.push({ name: config.name, pendingFields: r.pendingFields });
+      )) as ApplyConfigResult;
+      results.push({ name: config.name, kind: r.kind, pendingFields: r.pendingFields });
     }
     return results;
   }
