@@ -18,7 +18,7 @@ pipeline.
 > and mutations — nothing leaves your deployment.
 
 **Documentation:** [Overview](./docs/overview.md) (what it is + how it works) ·
-[Usage guide](./docs/usage.md) (install, API, ranking profiles, backfills). This
+[Usage guide](./docs/usage.md) (install, API, ranking profiles, reindex). This
 README is the quick tour; the guides are the full reference.
 
 Found a bug? Feature request?
@@ -278,25 +278,24 @@ bulk import yet (`upsertMany` runs in one mutation, bounded by per-mutation
 limits). `deleteCollection` reads index rows in one mutation, so it is bounded;
 re-seed (upsert replaces) for very large collections.
 
-### Migration: backfill after upgrading
+### Migration: reindex after a config change
 
-Indexes are populated **on write**, so documents indexed under an earlier version
-need a one-time backfill (or just re-`upsert` them, which rebuilds everything).
-Each backfill processes one bounded page per call and returns `{ cursor, done }`
-— call in a loop or self-chain with `ctx.scheduler` until `done`; all are
-idempotent. See [`example/convex/products.ts`](./example/convex/products.ts) for
-self-chaining drivers.
+Indexes are populated **on write**, so documents indexed under an earlier config —
+or a collection that just gained a structural field (`filterFields`/`facetFields`/
+`sortSpecs`) via `sync` — need their existing documents replayed to build the new
+index rows. Because the component stores only the index-relevant projection
+(`storedFields: "derived"`), it can't rebuild from its own storage: **the app
+replays its own copy** of each document through `upsert`/`upsertMany`, which
+rebuilds every index row (postings, filters, facets, sort) under the current
+config. `sync` flags fields awaiting reindex (`search.pendingFields`); clear them
+with `search.clearPending` once the replay finishes. See
+[`example/convex/products.ts`](./example/convex/products.ts) for the self-chaining
+`reindex` driver that pages the app's own `productDocs` table.
 
 - Matching depends on the `terms`/`trigrams` tables — pre-existing docs return
   **zero results until re-upserted**.
-- `search.backfillCounterPage` — the `out_of`/browse counter.
-- `search.backfillFiltersPage` — the `filters` index (`filterBy`).
-- `search.backfillFacetCountsPage` — the facet counters.
-- `search.backfillSortIndexPage` — the sort index (`sortSpecs`).
-
-Pick a `batch` that stays under Convex's 4,096-reads-per-call limit (the filter
-backfill rewrites one row per `filterFields` entry, so wide configs use a smaller
-batch — the example uses `100`).
+- Replay in bounded pages (the example uses `100`) to stay under Convex's
+  4,096-reads-per-call limit.
 
 ## Running the example
 
