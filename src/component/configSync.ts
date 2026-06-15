@@ -13,10 +13,9 @@ export const applyCollectionConfig = mutation({
   args: { config: collectionConfigValidator },
   handler: async (ctx, { config }): Promise<ApplyConfigResult> => {
     // applyCollectionConfig defaults storedFields to "derived" by design
-    // (vs createCollection's "all"): config-synced collections will store the
-    // index-relevant projection rather than the whole document. NOTE: the
-    // projection itself is not yet implemented — "derived" currently stores the
-    // whole doc (see project() in write.ts) until that work lands.
+    // (vs createCollection's "all"): config-synced collections store the
+    // index-relevant projection (see project() in write.ts) rather than the
+    // whole document, leaving the app to hydrate serving fields by id.
     const storedFields = config.storedFields ?? "derived";
     validateCollectionConfig({ ...config, storedFields });
     const stored = await loadCollection(ctx, config.name);

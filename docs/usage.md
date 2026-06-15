@@ -121,8 +121,9 @@ await search.delete(ctx, { collection: "products", id: "1" });
 
 - `id` is a **consumer-provided string** and the identity key. Re-upserting an
   `id` **replaces** the prior document (replace, not merge).
-- The component does **not** auto-inject `id` into the stored doc — include it in
-  `doc` if you want it back in `hits[].document`.
+- Each hit carries its `id` (`hits[].id`); you hydrate the full document by that
+  `id` from your own table (the component returns ids + score + highlight, not
+  document contents — see [The result shape](#the-result-shape)).
 - Writes are synchronous: the change is searchable as soon as the mutation
   commits.
 
