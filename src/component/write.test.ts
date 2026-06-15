@@ -105,6 +105,55 @@ describe("write path", () => {
     expect(r.hits[0].highlight.title).toBeDefined();
   });
 
+  it("derived storedFields persists only index-relevant fields", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "books",
+      searchFields: ["title"],
+      storedFields: "derived",
+      filterFields: [{ field: "year", type: "number" }],
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "books",
+      id: "b1",
+      doc: { title: "gatsby", year: 1925, blurb_html: "<h1>huge serving blob</h1>", isbn: "x" },
+    });
+    // Inspect the stored snapshot directly via t.run reading the documents table.
+    const stored = await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q) => q.eq("collection", "books").eq("docId", "b1"))
+        .unique();
+      return row?.stored as Record<string, unknown>;
+    });
+    // title (searchField) and year (filterField) kept; blurb_html / isbn dropped.
+    expect(stored).toEqual({ title: "gatsby", year: 1925 });
+  });
+
+  it("all storedFields still persists the whole doc", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "all1",
+      searchFields: ["title"],
+      storedFields: "all",
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "all1",
+      id: "x",
+      doc: { title: "t", extra: "kept" },
+    });
+    const stored = await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q) => q.eq("collection", "all1").eq("docId", "x"))
+        .unique();
+      return row?.stored as Record<string, unknown>;
+    });
+    expect(stored).toEqual({ title: "t", extra: "kept" });
+  });
+
   it("stores a doc with no indexable searchFields but makes it unmatchable", async () => {
     const t = await setup();
     await t.mutation(api.write.upsert, {

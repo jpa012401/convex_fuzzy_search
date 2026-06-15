@@ -8,16 +8,26 @@ import { addDoc, removeDoc } from "./counters";
 import { incrementFacet, decrementFacet } from "./facetCounts";
 import { addSortEntry, removeSortEntry } from "./sortIndex";
 import type { SortKey } from "./ranking";
+import { indexRelevantFields } from "./storedFields";
 
 type Doc = Record<string, unknown>;
 
-function project(doc: Doc, storedFields: "all" | "derived" | string[]): Doc {
-  // "derived" (index-relevant projection) is implemented by a separate change;
-  // until then treat it like "all" so a derived collection stores the whole doc
-  // rather than corrupting the projection by iterating the string.
-  if (storedFields === "all" || storedFields === "derived") return doc;
+function project(
+  doc: Doc,
+  col: {
+    storedFields: "all" | "derived" | string[];
+    searchFields: string[];
+    filterFields?: { field: string; type: "string" | "number" }[];
+    facetFields?: string[];
+    sortSpecs?: { field: string; order: "asc" | "desc" }[][];
+    rankProfiles?: Record<string, any>;
+  },
+): Doc {
+  const storedFields = col.storedFields;
+  if (storedFields === "all") return doc;
+  const keep = storedFields === "derived" ? indexRelevantFields(col) : storedFields;
   const out: Doc = {};
-  for (const f of storedFields) {
+  for (const f of keep) {
     if (f in doc) out[f] = doc[f];
   }
   return out;
@@ -96,7 +106,7 @@ async function upsertInternal(
   await ctx.db.insert("documents", {
     collection,
     docId: id,
-    stored: project(doc, col.storedFields),
+    stored: project(doc, col),
   });
 
   for (const f of col.filterFields ?? []) {
