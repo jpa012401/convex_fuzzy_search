@@ -180,6 +180,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      clearPendingFields: FunctionReference<
+        "mutation",
+        "internal",
+        { collection: string },
+        any,
+        Name
+      >;
     };
     search: {
       search: FunctionReference<

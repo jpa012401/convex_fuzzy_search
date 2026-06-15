@@ -24,6 +24,7 @@ import type * as score from "../score.js";
 import type * as search from "../search.js";
 import type * as sortIndex from "../sortIndex.js";
 import type * as stats from "../stats.js";
+import type * as storedFields from "../storedFields.js";
 import type * as terms from "../terms.js";
 import type * as textSearch from "../textSearch.js";
 import type * as tokenizer from "../tokenizer.js";
@@ -54,6 +55,7 @@ const fullApi: ApiFromModules<{
   search: typeof search;
   sortIndex: typeof sortIndex;
   stats: typeof stats;
+  storedFields: typeof storedFields;
   terms: typeof terms;
   textSearch: typeof textSearch;
   tokenizer: typeof tokenizer;
