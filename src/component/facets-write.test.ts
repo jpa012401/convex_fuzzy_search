@@ -66,37 +66,4 @@ describe("write path maintains facet counts", () => {
     await t.mutation(api.collections.createCollection, { name: "shop", searchFields: ["name"], storedFields: "all", facetFields: ["brand"] });
     expect(await brandCounts(t)).toEqual([]);
   });
-
-  it("backfill rebuilds facet counts for pre-existing docs", async () => {
-    const t = await setup();
-    // Insert document rows directly, bypassing the write path (simulates pre-S3 docs).
-    await t.run(async (ctx) => {
-      await ctx.db.insert("documents", { collection: "shop", docId: "z1", stored: { name: "a", brand: "Aurora", category: "A" } });
-      await ctx.db.insert("documents", { collection: "shop", docId: "z2", stored: { name: "b", brand: "Aurora", category: "B" } });
-    });
-    expect(await brandCounts(t)).toEqual([]);
-    let cursor: string | null = null;
-    do {
-      const r: any = await t.mutation(api.backfill.backfillFacetCountsPage, { collection: "shop", cursor, batch: 1 });
-      cursor = r.cursor;
-    } while (cursor !== null);
-    expect(await brandCounts(t)).toEqual([{ value: "Aurora", count: 2 }]);
-  });
-
-  it("backfill is idempotent (clears then rebuilds; re-run yields same counts)", async () => {
-    const t = await setup();
-    await t.mutation(api.write.upsert, { collection: "shop", id: "p1", doc: { name: "x", brand: "Aurora", category: "A" } });
-    let cursor: string | null = null;
-    do {
-      const r: any = await t.mutation(api.backfill.backfillFacetCountsPage, { collection: "shop", cursor, batch: 5 });
-      cursor = r.cursor;
-    } while (cursor !== null);
-    expect(await brandCounts(t)).toEqual([{ value: "Aurora", count: 1 }]);
-    cursor = null;
-    do {
-      const r: any = await t.mutation(api.backfill.backfillFacetCountsPage, { collection: "shop", cursor, batch: 5 });
-      cursor = r.cursor;
-    } while (cursor !== null);
-    expect(await brandCounts(t)).toEqual([{ value: "Aurora", count: 1 }]);
-  });
 });

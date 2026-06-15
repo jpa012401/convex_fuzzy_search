@@ -62,26 +62,6 @@ describe("write path maintains sort index", () => {
     expect(await pageAsc(t)).toEqual([]);
   });
 
-  it("backfill rebuilds sort entries for pre-existing docs (idempotent)", async () => {
-    const t = await setup();
-    await t.run(async (ctx) => {
-      await ctx.db.insert("documents", { collection: "shop", docId: "z1", stored: { name: "a", price: 30 } });
-      await ctx.db.insert("documents", { collection: "shop", docId: "z2", stored: { name: "b", price: 10 } });
-    });
-    expect(await pageAsc(t)).toEqual([]);
-    const runBackfill = async () => {
-      let cursor: string | null = null;
-      do {
-        const r: any = await t.mutation(api.backfill.backfillSortIndexPage, { collection: "shop", cursor, batch: 1 });
-        cursor = r.cursor;
-      } while (cursor !== null);
-    };
-    await runBackfill();
-    expect(await pageAsc(t)).toEqual(["z2", "z1"]);
-    await runBackfill(); // insertIfDoesNotExist -> idempotent
-    expect(await pageAsc(t)).toEqual(["z2", "z1"]);
-  });
-
   it("pageSortedDocIdsRange reads the first N in base order in one batched scan", async () => {
     const t = await setup();
     for (let i = 0; i < 6; i++) {

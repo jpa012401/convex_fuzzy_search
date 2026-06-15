@@ -160,47 +160,6 @@ export class FuzzySearch {
     return ctx.runMutation(this.component.write.delete, args);
   }
 
-  // Backfill the doc counter for a collection, one bounded page at a time.
-  // Returns the next cursor (null when done). Idempotent and safe to re-run.
-  // For collections indexed before the aggregate counter existed.
-  async backfillCounterPage(
-    ctx: MutationCtx,
-    args: { collection: string; cursor?: string | null; batch?: number },
-  ): Promise<{ cursor: string | null; done: boolean }> {
-    return ctx.runMutation(this.component.backfill.backfillCounterPage, args);
-  }
-
-  // Rebuild the filter index rows for a collection, one bounded page at a time.
-  // Returns the next cursor (null when done). Idempotent and safe to re-run.
-  // For collections indexed before the S2 filter index existed.
-  async backfillFiltersPage(
-    ctx: MutationCtx,
-    args: { collection: string; cursor?: string | null; batch?: number },
-  ): Promise<{ cursor: string | null; done: boolean }> {
-    return ctx.runMutation(this.component.backfill.backfillFiltersPage, args);
-  }
-
-  // Rebuild the sort-index entries for a collection, one bounded page at a time.
-  // Returns the next cursor (null when done). Idempotent (insert-if-absent), so
-  // safe to re-run. For collections indexed before the S4 sort index existed.
-  async backfillSortIndexPage(
-    ctx: MutationCtx,
-    args: { collection: string; cursor?: string | null; batch?: number },
-  ): Promise<{ cursor: string | null; done: boolean }> {
-    return ctx.runMutation(this.component.backfill.backfillSortIndexPage, args);
-  }
-
-  // Rebuild the facet-count rows for a collection, one bounded page at a time.
-  // Returns the next cursor (null when done). Idempotent (clear-then-rebuild on
-  // the first page), so a full run from the start is safe to re-run. For
-  // collections indexed before the S3 facet counters existed.
-  async backfillFacetCountsPage(
-    ctx: MutationCtx,
-    args: { collection: string; cursor?: string | null; batch?: number },
-  ): Promise<{ cursor: string | null; done: boolean }> {
-    return ctx.runMutation(this.component.backfill.backfillFacetCountsPage, args);
-  }
-
   // Index-health snapshot: the live counts held in the aggregate/counter
   // components. For a fully-backfilled collection every facet `total` and every
   // sort-spec `count` equals `out_of`. Useful for validating a migration.
