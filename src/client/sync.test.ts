@@ -36,4 +36,25 @@ describe("FuzzySearch config", () => {
     // confirm the config wrapper shape was passed
     expect(runMutation).toHaveBeenCalledWith("ref", expect.objectContaining({ config: expect.objectContaining({ name: "a" }) }));
   });
+
+  it("pendingFields reads the collection's pending list via getCollection", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ name: "p", pendingFields: ["brand"] });
+    const search = new FuzzySearch({ collections: { getCollection: "ref" } } as any);
+    const pending = await search.pendingFields({ runQuery } as any, "p");
+    expect(pending).toEqual(["brand"]);
+    expect(runQuery).toHaveBeenCalledWith("ref", { name: "p" });
+  });
+
+  it("pendingFields returns [] when the row has no pending list or is null", async () => {
+    const search = new FuzzySearch({ collections: { getCollection: "ref" } } as any);
+    expect(await search.pendingFields({ runQuery: vi.fn().mockResolvedValue(null) } as any, "p")).toEqual([]);
+    expect(await search.pendingFields({ runQuery: vi.fn().mockResolvedValue({ name: "p" }) } as any, "p")).toEqual([]);
+  });
+
+  it("clearPending calls the clearPendingFields mutation", async () => {
+    const runMutation = vi.fn().mockResolvedValue(undefined);
+    const search = new FuzzySearch({ configSync: { clearPendingFields: "ref" } } as any);
+    await search.clearPending({ runMutation } as any, "p");
+    expect(runMutation).toHaveBeenCalledWith("ref", { collection: "p" });
+  });
 });

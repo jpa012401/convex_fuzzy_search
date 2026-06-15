@@ -115,6 +115,21 @@ export class FuzzySearch {
     return ctx.runQuery(this.component.collections.getCollection, { name });
   }
 
+  /**
+   * Fields awaiting reindex for a collection (structural fields added via sync
+   * whose existing documents have not been re-upserted yet). Empty when fully
+   * indexed. Drive an app-side replay (re-upsert your docs) then clearPending().
+   */
+  async pendingFields(ctx: QueryCtx, collection: string): Promise<string[]> {
+    const c = await ctx.runQuery(this.component.collections.getCollection, { name: collection });
+    return ((c?.pendingFields as string[] | undefined) ?? []);
+  }
+
+  /** Mark a collection fully reindexed (call after replaying all documents). */
+  async clearPending(ctx: MutationCtx, collection: string): Promise<void> {
+    await ctx.runMutation(this.component.configSync.clearPendingFields, { collection });
+  }
+
   async deleteCollection(ctx: MutationCtx, name: string) {
     return ctx.runMutation(this.component.collections.deleteCollection, {
       name,
