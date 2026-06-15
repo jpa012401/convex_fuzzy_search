@@ -21,11 +21,80 @@ export async function requireCollection(ctx: QueryCtx, name: string) {
   return c;
 }
 
+export function validateCollectionConfig(args: {
+  storedFields: "all" | "derived" | string[];
+  searchFields: string[];
+  filterFields?: { field: string; type: "string" | "number" }[];
+  facetFields?: string[];
+  sortSpecs?: { field: string; order: "asc" | "desc" }[][];
+  rankProfiles?: Record<string, { base: string; terms: any[] }>;
+}): void {
+  const storedFields = args.storedFields;
+  // "derived" is treated like "all": the explicit-projection consistency checks
+  // only apply when storedFields is an actual array.
+  if (Array.isArray(storedFields)) {
+    const persisted = new Set(storedFields);
+    for (const f of args.filterFields ?? []) {
+      if (!persisted.has(f.field)) {
+        throw new Error(
+          `filterFields field "${f.field}" must be included in storedFields`,
+        );
+      }
+    }
+    for (const f of args.facetFields ?? []) {
+      if (!persisted.has(f)) {
+        throw new Error(
+          `facetFields field "${f}" must be included in storedFields`,
+        );
+      }
+    }
+    for (const spec of args.sortSpecs ?? []) {
+      for (const k of spec) {
+        if (!persisted.has(k.field)) {
+          throw new Error(
+            `sortSpecs field "${k.field}" must be included in storedFields`,
+          );
+        }
+      }
+    }
+  }
+  if (args.rankProfiles) {
+    const specIds = new Set((args.sortSpecs ?? []).map((s) => canonicalSpecId(s)));
+    const persisted = Array.isArray(storedFields) ? new Set(storedFields) : null;
+    const fieldOk = (f: string) => persisted === null || persisted.has(f);
+    for (const [name, profile] of Object.entries(args.rankProfiles)) {
+      if (!specIds.has(profile.base)) {
+        throw new Error(`rankProfile "${name}" base "${profile.base}" must be a declared sortSpec`);
+      }
+      const seen = new Set<string>();
+      for (const term of profile.terms) {
+        if (seen.has(term.id)) throw new Error(`rankProfile "${name}" has duplicate term id "${term.id}"`);
+        seen.add(term.id);
+        if (term.type === "recencyDecay" && !(term.halfLifeMs > 0)) {
+          throw new Error(`rankProfile "${name}" term "${term.id}" halfLifeMs must be > 0`);
+        }
+        if (term.type === "geoDistance" && !(term.maxKm > 0)) {
+          throw new Error(`rankProfile "${name}" term "${term.id}" maxKm must be > 0`);
+        }
+        const fields =
+          term.type === "geoDistance" ? [term.latField, term.lngField]
+          : term.type === "relevance" ? []
+          : [term.field];
+        for (const f of fields) {
+          if (!fieldOk(f)) {
+            throw new Error(`rankProfile "${name}" term "${term.id}" field "${f}" must be included in storedFields`);
+          }
+        }
+      }
+    }
+  }
+}
+
 export const createCollection = mutation({
   args: {
     name: v.string(),
     searchFields: v.array(v.string()),
-    storedFields: v.optional(v.union(v.literal("all"), v.array(v.string()))),
+    storedFields: v.optional(v.union(v.literal("all"), v.literal("derived"), v.array(v.string()))),
     filterFields: v.optional(
       v.array(
         v.object({
@@ -53,62 +122,7 @@ export const createCollection = mutation({
       throw new Error(`Collection "${args.name}" already exists`);
     }
     const storedFields = args.storedFields ?? "all";
-    if (storedFields !== "all") {
-      const persisted = new Set(storedFields);
-      for (const f of args.filterFields ?? []) {
-        if (!persisted.has(f.field)) {
-          throw new Error(
-            `filterFields field "${f.field}" must be included in storedFields`,
-          );
-        }
-      }
-      for (const f of args.facetFields ?? []) {
-        if (!persisted.has(f)) {
-          throw new Error(
-            `facetFields field "${f}" must be included in storedFields`,
-          );
-        }
-      }
-      for (const spec of args.sortSpecs ?? []) {
-        for (const k of spec) {
-          if (!persisted.has(k.field)) {
-            throw new Error(
-              `sortSpecs field "${k.field}" must be included in storedFields`,
-            );
-          }
-        }
-      }
-    }
-    if (args.rankProfiles) {
-      const specIds = new Set((args.sortSpecs ?? []).map((s) => canonicalSpecId(s)));
-      const persisted = storedFields === "all" ? null : new Set(storedFields);
-      const fieldOk = (f: string) => persisted === null || persisted.has(f);
-      for (const [name, profile] of Object.entries(args.rankProfiles)) {
-        if (!specIds.has(profile.base)) {
-          throw new Error(`rankProfile "${name}" base "${profile.base}" must be a declared sortSpec`);
-        }
-        const seen = new Set<string>();
-        for (const term of profile.terms) {
-          if (seen.has(term.id)) throw new Error(`rankProfile "${name}" has duplicate term id "${term.id}"`);
-          seen.add(term.id);
-          if (term.type === "recencyDecay" && !(term.halfLifeMs > 0)) {
-            throw new Error(`rankProfile "${name}" term "${term.id}" halfLifeMs must be > 0`);
-          }
-          if (term.type === "geoDistance" && !(term.maxKm > 0)) {
-            throw new Error(`rankProfile "${name}" term "${term.id}" maxKm must be > 0`);
-          }
-          const fields =
-            term.type === "geoDistance" ? [term.latField, term.lngField]
-            : term.type === "relevance" ? []
-            : [term.field];
-          for (const f of fields) {
-            if (!fieldOk(f)) {
-              throw new Error(`rankProfile "${name}" term "${term.id}" field "${f}" must be included in storedFields`);
-            }
-          }
-        }
-      }
-    }
+    validateCollectionConfig({ ...args, storedFields });
     await ctx.db.insert("collections", {
       name: args.name,
       searchFields: args.searchFields,

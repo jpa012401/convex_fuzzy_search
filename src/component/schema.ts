@@ -21,7 +21,7 @@ export default defineSchema({
     name: v.string(),
     searchFields: v.array(v.string()),
     // "all" stores the whole doc; otherwise an explicit projection.
-    storedFields: v.union(v.literal("all"), v.array(v.string())),
+    storedFields: v.union(v.literal("all"), v.literal("derived"), v.array(v.string())),
     filterFields: v.optional(
       v.array(
         v.object({
@@ -42,6 +42,7 @@ export default defineSchema({
       ),
     ),
     rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
+    pendingFields: v.optional(v.array(v.string())),
   }).index("by_name", ["name"]),
 
   documents: defineTable({
