@@ -28,10 +28,8 @@ describe("search", () => {
     const r = await t.query(api.search.search, { collection: "products", q: "red" });
     expect(r.found).toBe(2);
     expect(r.out_of).toBe(3);
-    expect(r.hits.map((h: any) => h.document.name).sort()).toEqual([
-      "Red Hat",
-      "Red Running Shoe",
-    ]);
+    // p3 = "Red Hat", p1 = "Red Running Shoe"
+    expect(r.hits.map((h: any) => h.id).sort()).toEqual(["p1", "p3"]);
   });
 
   it("multi token is AND (all tokens must match)", async () => {
@@ -41,7 +39,7 @@ describe("search", () => {
       q: "red running",
     });
     expect(r.found).toBe(1);
-    expect(r.hits[0].document.name).toBe("Red Running Shoe");
+    expect(r.hits[0].id).toBe("p1"); // "Red Running Shoe"
   });
 
   it("queryBy restricts matching fields", async () => {
@@ -127,11 +125,11 @@ describe("typo-tolerant prefix search", () => {
   it("ranks exact above prefix above typo via text_match", async () => {
     const t = await setup();
     const exact = await t.query(api.search.search, { collection: "products", q: "running" });
-    expect(exact.hits[0].text_match).toBe(3);
+    expect(exact.hits[0].score).toBe(3);
     const prefix = await t.query(api.search.search, { collection: "products", q: "run" });
-    expect(prefix.hits[0].text_match).toBe(2);
+    expect(prefix.hits[0].score).toBe(2);
     const typo = await t.query(api.search.search, { collection: "products", q: "runing" });
-    expect(typo.hits[0].text_match).toBe(1.5);
+    expect(typo.hits[0].score).toBe(1.5);
   });
 });
 
@@ -238,7 +236,7 @@ describe("highlighting + weighted sort", () => {
   it("highlights the matched term in the field, preserving case", async () => {
     const t = await setupShop();
     const r = await t.query(api.search.search, { collection: "shop", q: "running" });
-    const hit = r.hits.find((h: any) => h.document.id === "1");
+    const hit = r.hits.find((h: any) => h.id === "1");
     expect(hit).toBeDefined();
     expect(hit!.highlight).toEqual({
       name: { snippet: "Red <mark>Running</mark> Shoe", matched_tokens: ["Running"] },
@@ -248,7 +246,7 @@ describe("highlighting + weighted sort", () => {
   it("prefix query highlights the full term", async () => {
     const t = await setupShop();
     const r = await t.query(api.search.search, { collection: "shop", q: "run" });
-    const hit = r.hits.find((h: any) => h.document.id === "1");
+    const hit = r.hits.find((h: any) => h.id === "1");
     expect(hit).toBeDefined();
     expect(hit!.highlight.name.snippet).toContain("<mark>Running</mark>");
   });
@@ -266,8 +264,8 @@ describe("highlighting + weighted sort", () => {
       q: "running",
       rankBy: { text: 1, fields: [{ field: "popularity", weight: 1 }] },
     });
-    expect(r.hits[0].document.id).toBe("2"); // popularity 100 wins
-    expect(r.hits[0].text_match).toBe(3); // reported relevance still raw
+    expect(r.hits[0].id).toBe("2"); // popularity 100 wins
+    expect(r.hits[0].score).toBe(3); // reported relevance still raw
   });
 
   it("sortBy price ascending orders by field", async () => {
@@ -277,7 +275,7 @@ describe("highlighting + weighted sort", () => {
       q: "",
       sortBy: [{ field: "price", order: "asc" }],
     });
-    expect(r.hits.map((h: any) => h.document.id)).toEqual(["3", "2", "1"]);
+    expect(r.hits.map((h: any) => h.id)).toEqual(["3", "2", "1"]);
   });
 
   it("sortBy price descending", async () => {
@@ -287,7 +285,7 @@ describe("highlighting + weighted sort", () => {
       q: "",
       sortBy: [{ field: "price", order: "desc" }],
     });
-    expect(r.hits.map((h: any) => h.document.id)).toEqual(["1", "2", "3"]);
+    expect(r.hits.map((h: any) => h.id)).toEqual(["1", "2", "3"]);
   });
 
   it("rankBy composes with a _text_match sortBy key (uses the blended score)", async () => {
@@ -298,7 +296,7 @@ describe("highlighting + weighted sort", () => {
       rankBy: { text: 1, fields: [{ field: "popularity", weight: 1 }] },
       sortBy: [{ field: "_text_match", order: "desc" }],
     });
-    expect(r.hits[0].document.id).toBe("2"); // blended score (popularity) drives _text_match key
+    expect(r.hits[0].id).toBe("2"); // blended score (popularity) drives _text_match key
   });
 
   it("rankBy text:0 sorts purely by the weighted field", async () => {
@@ -309,7 +307,7 @@ describe("highlighting + weighted sort", () => {
       rankBy: { text: 0, fields: [{ field: "popularity", weight: 1 }] },
     });
     // only the two "running" docs match; ordered by popularity (100 > 1)
-    expect(r.hits.map((h: any) => h.document.id)).toEqual(["2", "1"]);
+    expect(r.hits.map((h: any) => h.id)).toEqual(["2", "1"]);
   });
 });
 
@@ -349,7 +347,8 @@ describe("S1 lean reads", () => {
     const r = await t.query(api.search.search, { collection: "products", q: "red" });
     expect(r.found).toBe(2);
     expect(r.out_of).toBe(3);
-    expect(r.hits.map((h: any) => h.document.name).sort()).toEqual(["Red Hat", "Red Running Shoe"]);
+    // p3 = "Red Hat", p1 = "Red Running Shoe"
+    expect(r.hits.map((h: any) => h.id).sort()).toEqual(["p1", "p3"]);
   });
 
   it("simple browse pages off the aggregate (docId order)", async () => {
@@ -357,7 +356,8 @@ describe("S1 lean reads", () => {
     const r = await t.query(api.search.search, { collection: "products", q: "", page: 1, perPage: 2 });
     expect(r.found).toBe(3);
     expect(r.hits.length).toBe(2);
-    expect(r.hits.map((h: any) => h.document.name)).toEqual(["Red Running Shoe", "Blue Running Jacket"]);
+    // docId order: p1 = "Red Running Shoe", p2 = "Blue Running Jacket"
+    expect(r.hits.map((h: any) => h.id)).toEqual(["p1", "p2"]);
   });
 
   it("browse + filter still works (fallback path)", async () => {
@@ -396,7 +396,8 @@ describe("S2 indexed filtering", () => {
     const t = await setupFacets();
     const r = await t.query(api.search.search, { collection: "shop", q: "", filterBy: "brand:Aurora" });
     expect(r.found).toBe(2);
-    expect(r.hits.map((h: any) => h.document.name).sort()).toEqual(["running shoe", "trail shoe"]);
+    // brand:Aurora => id 1 ("running shoe"), id 2 ("trail shoe")
+    expect(r.hits.map((h: any) => h.id).sort()).toEqual(["1", "2"]);
   });
 
   it("numeric range filter via index", async () => {

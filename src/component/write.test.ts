@@ -100,8 +100,16 @@ describe("write path", () => {
     });
     const r = await t.query(api.search.search, { collection: "d", q: "hello" });
     expect(r.found).toBeGreaterThanOrEqual(1);
-    // whole doc stored (not corrupted): title comes back intact and is highlightable
-    expect(r.hits[0].document).toEqual({ title: "hello world" });
+    // whole doc stored (not corrupted): the stored snapshot is the intact title field,
+    // not a char-by-char-indexed blob, and it remains highlightable.
+    const stored = await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q) => q.eq("collection", "d").eq("docId", "1"))
+        .unique();
+      return row?.stored as Record<string, unknown>;
+    });
+    expect(stored).toEqual({ title: "hello world" });
     expect(r.hits[0].highlight.title).toBeDefined();
   });
 

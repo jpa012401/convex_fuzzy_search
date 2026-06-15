@@ -29,7 +29,7 @@ async function seeded() {
   for (const d of docs) await t.mutation(api.write.upsert, { collection: "shop", ...d });
   return t;
 }
-const ids = (r: any) => r.hits.map((h: any) => h.document.id);
+const ids = (r: any) => r.hits.map((h: any) => h.id);
 
 describe("browse + sort served from the sort index", () => {
   it("single-key price asc (declared) pages in order, found === out_of", async () => {

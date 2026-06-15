@@ -38,7 +38,7 @@ async function seeded() {
   for (const d of docs) await c.mutation(api.write.upsert, { collection: "jobs", ...d });
   return { c, now };
 }
-const ids = (r: any) => r.hits.map((h: any) => h.document.id);
+const ids = (r: any) => r.hits.map((h: any) => h.id);
 
 describe("rank profiles re-rank a browse window", () => {
   it("partnered flag (huge weight) floats an old job to the top despite base=newest", async () => {
@@ -102,7 +102,7 @@ describe("rank profiles re-rank a browse window", () => {
     const seen = new Set<string>();
     for (let page = 1; page <= 7; page++) {
       const r = await c.query(api.search.search, { collection: "shop", q: "", perPage: 3, page, rank: { profile: "p" } });
-      for (const h of r.hits) seen.add(h.document.id);
+      for (const h of r.hits) seen.add(h.id);
     }
     expect(seen.size).toBe(20); // every doc appears across pages 1..7 (20/3 -> 7 pages), no gap
   });
