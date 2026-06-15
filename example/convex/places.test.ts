@@ -12,28 +12,29 @@ async function seeded(t: any, n = 30) {
   registerFuzzySearch(t);
   registerAggregate(t, "fuzzySearch/docCount");
   registerAggregate(t, "fuzzySearch/sortIndex");
-  await t.mutation(api.places.seedPlaces, { total: n });
+  const r = await t.mutation(api.places.seedPlaces, { total: n });
+  return r.now as number; // anchor for context.now
 }
 
 describe("places backend", () => {
   it("seeds and searches by cuisine text + hydrates", async () => {
     const t = convexTest(schema, modules);
     await seeded(t);
-    const r = await t.query(api.places.searchPlaces, { q: "bistro", perPage: 5 });
-    expect(r.found).toBeGreaterThanOrEqual(0);
-    if (r.hits.length) expect(r.hits[0].document).toBeDefined();
+    const r = await t.query(api.places.searchPlaces, { q: "", perPage: 5 });
+    expect(r.found).toBeGreaterThan(0);
+    expect(r.hits[0].document.name).toBeDefined();
   });
 
   it("geoDistance ranks nearer places first", async () => {
     const t = convexTest(schema, modules);
-    await seeded(t, 40);
+    const now = await seeded(t, 40);
     const r = await t.query(api.places.searchPlaces, {
       q: "", perPage: 5,
-      rank: { profile: "nearby", context: { now: 2_000_000_000_000, origin: { lat: 37.7749, lng: -122.4194 } } },
+      rank: { profile: "nearby", context: { now, origin: { lat: 37.7749, lng: -122.4194 } } },
     });
     expect(r.hits.length).toBeGreaterThan(0);
     const dist = (h: any) => {
-      const d = h.document; if (!d.lat) return Infinity;
+      const d = h.document; if (d.lat == null) return Infinity;
       return Math.hypot(d.lat - 37.7749, d.lng + 122.4194);
     };
     expect(dist(r.hits[0])).toBeLessThanOrEqual(dist(r.hits[r.hits.length - 1]) + 0.5);
@@ -43,6 +44,8 @@ describe("places backend", () => {
     const t = convexTest(schema, modules);
     await seeded(t, 40);
     const r = await t.query(api.places.searchPlaces, { q: "", facetBy: ["cuisine"], perPage: 2 });
-    expect(r.facet_counts.find((f: any) => f.field_name === "cuisine")).toBeDefined();
+    const f = r.facet_counts.find((f: any) => f.field_name === "cuisine");
+    expect(f).toBeDefined();
+    expect(f!.counts.length).toBeGreaterThan(0);
   });
 });

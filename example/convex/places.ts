@@ -56,11 +56,11 @@ export const seedPlaces = mutation({
   handler: async (ctx, { total }) => {
     await search.sync(ctx);
     const n = total ?? 120;
-    const now = 2_000_000_000_000;
+    const now = Date.now();
     const docs = generatePlaceRange(0, n, now);
     await search.upsertMany(ctx, { collection: COLLECTION, docs });
     await putDocs(ctx, docs);
-    return { seeded: n };
+    return { seeded: n, now };
   },
 });
 
