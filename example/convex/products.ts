@@ -4,7 +4,6 @@ import { components, api } from "./_generated/api";
 import { FuzzySearch } from "@elevatech/fuzzy-search";
 import { generateRange, DEFAULT_PROFILE, type Profile } from "./dataset";
 
-const search = new FuzzySearch(components.fuzzySearch);
 const COLLECTION = "products";
 
 // Filter/facet field declarations shared by the small demo seed and the large
@@ -46,17 +45,23 @@ export const RANK_PROFILES = {
   },
 };
 
-async function createProductsCollection(ctx: any) {
-  await search.createCollection(ctx, {
-    name: COLLECTION,
-    searchFields: ["name", "description", "brand", "category"],
-    storedFields: "all",
-    filterFields: FILTER_FIELDS,
-    facetFields: FACET_FIELDS,
-    sortSpecs: SORT_SPECS,
-    rankProfiles: RANK_PROFILES,
-  });
-}
+const search = new FuzzySearch(components.fuzzySearch, {
+  collections: {
+    products: {
+      searchFields: ["name", "description", "brand", "category"],
+      storedFields: "derived",
+      filterFields: FILTER_FIELDS,
+      facetFields: FACET_FIELDS,
+      sortSpecs: SORT_SPECS,
+      rankProfiles: RANK_PROFILES,
+    },
+  },
+});
+
+export const sync = mutation({
+  args: {},
+  handler: async (ctx) => search.sync(ctx),
+});
 
 // --- editable personalization profile --------------------------------------
 async function loadProfile(ctx: QueryCtx): Promise<Profile> {
@@ -109,7 +114,7 @@ export const seed = mutation({
   handler: async (ctx) => {
     const existing = await search.getCollection(ctx, COLLECTION);
     if (existing) await search.deleteCollection(ctx, COLLECTION);
-    await createProductsCollection(ctx);
+    await search.sync(ctx);
     await search.upsertMany(ctx, {
       collection: COLLECTION,
       docs: SAMPLE.map(({ id, ...rest }) => ({ id, doc: { id, ...rest } })),
@@ -163,10 +168,10 @@ export const startSeed = mutation({
     const c = await search.getCollection(ctx, COLLECTION);
     const hasFullConfig = !!c?.filterFields?.some((f: any) => f.field === "affinity");
     if (!c) {
-      await createProductsCollection(ctx);
+      await search.sync(ctx);
     } else if (!hasFullConfig) {
       await search.deleteCollection(ctx, COLLECTION); // small wrong-config collection
-      await createProductsCollection(ctx);
+      await search.sync(ctx);
     }
     await ctx.scheduler.runAfter(0, api.products.seedChain, { start: 0, total, batch });
     return { scheduled: total, batch };
