@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { SearchBar } from "./components/SearchBar";
@@ -8,7 +8,8 @@ type SortKey = { field: string; order: "asc" | "desc" };
 const SORT_FIELDS = ["price", "rating", "popularity", "releasedDaysAgo"];
 
 export function RankingLab() {
-  const now = useMemo(() => Date.now(), []);
+  // Lazy initial state: Date.now() runs once at mount (not during render).
+  const [now] = useState(() => Date.now());
   const [q, setQ] = useState("");
   const [useFresh, setUseFresh] = useState(true);
   const [recencyW, setRecencyW] = useState(5);

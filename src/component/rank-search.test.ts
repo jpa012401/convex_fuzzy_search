@@ -126,7 +126,7 @@ describe("rank profiles re-rank a browse window", () => {
     });
     expect(r.found).toBe(12);
     const cat = r.facet_counts.find((f: any) => f.field_name === "cat");
-    const total = cat.counts.reduce((s: number, x: any) => s + x.count, 0);
+    const total = cat!.counts.reduce((s: number, x: any) => s + x.count, 0);
     expect(total).toBe(12); // full matched set, not the window of 5
   });
 

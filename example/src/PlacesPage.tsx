@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { SearchBar } from "./components/SearchBar";
@@ -6,7 +6,8 @@ import { PlaceCard } from "./components/PlaceCard";
 import { CITY_PRESETS } from "../convex/placesData";
 
 export function PlacesPage() {
-  const now = useMemo(() => Date.now(), []);
+  // Lazy initial state: Date.now() runs once at mount (not during render).
+  const [now] = useState(() => Date.now());
   const [q, setQ] = useState("");
   const [origin, setOrigin] = useState(CITY_PRESETS[0]);
   const [geoW, setGeoW] = useState(5);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { CATEGORY_OPTIONS, BRAND_OPTIONS } from "../../convex/dataset";
 
 export type Profile = {
@@ -24,14 +24,16 @@ export function PreferencesEditor({
   const [brands, setBrands] = useState<string[]>([]);
   const [terms, setTerms] = useState("");
 
-  // Sync local edit state when the stored profile loads/changes.
-  useEffect(() => {
-    if (profile) {
-      setCats(profile.preferredCategories);
-      setBrands(profile.preferredBrands);
-      setTerms(profile.pastSearchTerms.join(", "));
-    }
-  }, [profile]);
+  // Sync local edit state when the stored profile loads/changes, using React's
+  // "adjust state during render" pattern (no effect): when the profile object
+  // identity changes, reset the derived edit fields in the same render.
+  const [seenProfile, setSeenProfile] = useState<Profile | undefined>(undefined);
+  if (profile && profile !== seenProfile) {
+    setSeenProfile(profile);
+    setCats(profile.preferredCategories);
+    setBrands(profile.preferredBrands);
+    setTerms(profile.pastSearchTerms.join(", "));
+  }
 
   if (!profile) return null;
 
