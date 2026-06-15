@@ -6,6 +6,15 @@ import { generateRange, DEFAULT_PROFILE, type Profile } from "./dataset";
 
 const COLLECTION = "products";
 
+// recencyDecay needs an absolute ms timestamp; the dataset stores the relative
+// releasedDaysAgo. Derive releasedAt from the real current time at seed so the
+// 'fresh' profile ranks meaningfully (a fixed future anchor would make every
+// releasedAt future-dated and recencyDecay inert).
+function withReleasedAt(doc: Record<string, unknown>, now: number): Record<string, unknown> {
+  const daysAgo = typeof doc.releasedDaysAgo === "number" ? doc.releasedDaysAgo : 0;
+  return { ...doc, releasedAt: now - daysAgo * 86_400_000 };
+}
+
 // Filter/facet field declarations shared by the small demo seed and the large
 // synthetic dataset. Numeric fields double as rankBy/sortBy signals.
 const FILTER_FIELDS = [
@@ -41,6 +50,15 @@ export const RANK_PROFILES = {
       { id: "pop", type: "field" as const, weight: 0.001, field: "popularity" },
       { id: "aff", type: "field" as const, weight: 1, field: "affinity" },
       { id: "pref", type: "setBoost" as const, weight: 5, field: "category", setKey: "prefCats" },
+    ],
+  },
+  fresh: {
+    base: "popularity:desc",
+    window: 200,
+    terms: [
+      { id: "recency", type: "recencyDecay" as const, weight: 5, field: "releasedAt", halfLifeMs: 7_776_000_000 },
+      { id: "rel", type: "relevance" as const, weight: 1 },
+      { id: "pop", type: "field" as const, weight: 0.001, field: "popularity" },
     ],
   },
 };
@@ -135,11 +153,10 @@ export const seed = mutation({
     const existing = await search.getCollection(ctx, COLLECTION);
     if (existing) await search.deleteCollection(ctx, COLLECTION);
     await search.sync(ctx);
-    await search.upsertMany(ctx, {
-      collection: COLLECTION,
-      docs: SAMPLE.map(({ id, ...rest }) => ({ id, doc: { id, ...rest } })),
-    });
-    await putDocs(ctx, SAMPLE.map(({ id, ...rest }) => ({ id, doc: { id, ...rest } })));
+    const now = Date.now();
+    const docs = SAMPLE.map(({ id, ...rest }) => ({ id, doc: withReleasedAt({ id, ...rest }, now) }));
+    await search.upsertMany(ctx, { collection: COLLECTION, docs });
+    await putDocs(ctx, docs);
     return { seeded: SAMPLE.length };
   },
 });
@@ -167,9 +184,11 @@ export const seedChain = mutation({
   handler: async (ctx, { start, total, batch }) => {
     const count = Math.min(batch, total - start);
     const profile = await loadProfile(ctx); // affinity scored against current prefs
+    const now = Date.now();
     const docs = generateRange(start, count, profile);
-    await search.upsertMany(ctx, { collection: COLLECTION, docs });
-    await putDocs(ctx, docs);
+    const docs2 = docs.map((d) => ({ id: d.id, doc: withReleasedAt(d.doc, now) }));
+    await search.upsertMany(ctx, { collection: COLLECTION, docs: docs2 });
+    await putDocs(ctx, docs2);
     const next = start + count;
     if (next < total) {
       await ctx.scheduler.runAfter(0, api.products.seedChain, { start: next, total, batch });
