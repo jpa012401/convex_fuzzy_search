@@ -4,7 +4,8 @@ import { v } from "convex/values";
 import { clearCollectionCount } from "./counters";
 import { clearCollectionFacets } from "./facetCounts";
 import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
-import { rankProfileValidator } from "./schema";
+import type { Infer } from "convex/values";
+import { rankProfileValidator, rankTermValidator } from "./schema";
 
 export async function loadCollection(ctx: QueryCtx, name: string) {
   return await ctx.db
@@ -27,7 +28,7 @@ export function validateCollectionConfig(args: {
   filterFields?: { field: string; type: "string" | "number" }[];
   facetFields?: string[];
   sortSpecs?: { field: string; order: "asc" | "desc" }[][];
-  rankProfiles?: Record<string, { base: string; terms: any[] }>;
+  rankProfiles?: Record<string, { base: string; terms: Infer<typeof rankTermValidator>[] }>;
 }): void {
   const storedFields = args.storedFields;
   // "derived" is treated like "all": the explicit-projection consistency checks

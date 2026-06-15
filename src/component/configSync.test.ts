@@ -34,4 +34,15 @@ describe("applyCollectionConfig", () => {
     const c = await t.query(api.collections.getCollection, { name: "p" });
     expect(c?.pendingFields).toContain("brand");
   });
+
+  it("accumulates and dedups pending fields across two structural adds", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.configSync.applyCollectionConfig, { config: { name: "p", searchFields: ["n"], storedFields: "derived" } });
+    const r1 = await t.mutation(api.configSync.applyCollectionConfig, { config: { name: "p", searchFields: ["n"], storedFields: "derived", filterFields: [{ field: "brand", type: "string" }] } });
+    expect(r1).toMatchObject({ kind: "update" });
+    expect(r1.pendingFields).toContain("brand");
+    const r2 = await t.mutation(api.configSync.applyCollectionConfig, { config: { name: "p", searchFields: ["n"], storedFields: "derived", filterFields: [{ field: "brand", type: "string" }], facetFields: ["size"] } });
+    expect(r2.pendingFields.sort()).toEqual(["brand", "size"].sort()); // accumulated, deduped
+  });
 });

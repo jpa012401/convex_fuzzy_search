@@ -11,8 +11,11 @@ import type { SortKey } from "./ranking";
 
 type Doc = Record<string, unknown>;
 
-function project(doc: Doc, storedFields: "all" | string[]): Doc {
-  if (storedFields === "all") return doc;
+function project(doc: Doc, storedFields: "all" | "derived" | string[]): Doc {
+  // "derived" (index-relevant projection) is implemented by a separate change;
+  // until then treat it like "all" so a derived collection stores the whole doc
+  // rather than corrupting the projection by iterating the string.
+  if (storedFields === "all" || storedFields === "derived") return doc;
   const out: Doc = {};
   for (const f of storedFields) {
     if (f in doc) out[f] = doc[f];

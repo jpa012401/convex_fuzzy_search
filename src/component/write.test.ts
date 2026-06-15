@@ -85,6 +85,26 @@ describe("write path", () => {
     ).rejects.toThrow(/CollectionNotFound/);
   });
 
+  it("derived storedFields stores the document (no char-by-char corruption)", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "d",
+      searchFields: ["title"],
+      storedFields: "derived",
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "d",
+      id: "1",
+      doc: { title: "hello world" },
+    });
+    const r = await t.query(api.search.search, { collection: "d", q: "hello" });
+    expect(r.found).toBeGreaterThanOrEqual(1);
+    // whole doc stored (not corrupted): title comes back intact and is highlightable
+    expect(r.hits[0].document).toEqual({ title: "hello world" });
+    expect(r.hits[0].highlight.title).toBeDefined();
+  });
+
   it("stores a doc with no indexable searchFields but makes it unmatchable", async () => {
     const t = await setup();
     await t.mutation(api.write.upsert, {

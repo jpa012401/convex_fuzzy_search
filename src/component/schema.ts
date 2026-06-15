@@ -16,6 +16,37 @@ export const rankProfileValidator = v.object({
   terms: v.array(rankTermValidator),
 });
 
+// Shared declarative collection config shape. Reused as the `config` arg of
+// configSync.applyCollectionConfig so the validator is not duplicated.
+export const collectionConfigValidator = v.object({
+  name: v.string(),
+  searchFields: v.array(v.string()),
+  // "all" stores the whole doc; "derived" the index-relevant projection; or an explicit list.
+  storedFields: v.optional(
+    v.union(v.literal("all"), v.literal("derived"), v.array(v.string())),
+  ),
+  filterFields: v.optional(
+    v.array(
+      v.object({
+        field: v.string(),
+        type: v.union(v.literal("string"), v.literal("number")),
+      }),
+    ),
+  ),
+  facetFields: v.optional(v.array(v.string())),
+  sortSpecs: v.optional(
+    v.array(
+      v.array(
+        v.object({
+          field: v.string(),
+          order: v.union(v.literal("asc"), v.literal("desc")),
+        }),
+      ),
+    ),
+  ),
+  rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
+});
+
 export default defineSchema({
   collections: defineTable({
     name: v.string(),
