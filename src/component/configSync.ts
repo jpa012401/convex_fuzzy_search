@@ -1,5 +1,6 @@
 import { mutation } from "./_generated/server";
-import { loadCollection, validateCollectionConfig } from "./collections";
+import { v } from "convex/values";
+import { loadCollection, validateCollectionConfig, requireCollection } from "./collections";
 import { diffCollection } from "./diffCollection";
 import { collectionConfigValidator } from "./schema";
 
@@ -36,5 +37,15 @@ export const applyCollectionConfig = mutation({
     const pending = [...new Set([...(stored.pendingFields ?? []), ...diff.pendingFields])];
     await ctx.db.patch(stored._id, { ...next, pendingFields: pending });
     return { kind: "update" as const, pendingFields: pending };
+  },
+});
+
+// Mark a collection fully reindexed. The app calls this after replaying all of
+// its documents through upsert (which rebuilt the newly-added field's index rows).
+export const clearPendingFields = mutation({
+  args: { collection: v.string() },
+  handler: async (ctx, { collection }) => {
+    const c = await requireCollection(ctx, collection);
+    await ctx.db.patch(c._id, { pendingFields: [] });
   },
 });

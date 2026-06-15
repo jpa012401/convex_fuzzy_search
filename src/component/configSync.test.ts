@@ -76,3 +76,30 @@ describe("applyCollectionConfig", () => {
     expect(r2.pendingFields).toEqual([]);
   });
 });
+
+describe("clearPendingFields", () => {
+  it("clearPendingFields empties the pending list", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.configSync.applyCollectionConfig, {
+      config: { name: "p", searchFields: ["name"], storedFields: "derived" },
+    });
+    await t.mutation(api.configSync.applyCollectionConfig, {
+      config: { name: "p", searchFields: ["name"], storedFields: "derived", filterFields: [{ field: "brand", type: "string" }] },
+    });
+    // precondition: brand is pending
+    const before = await t.query(api.collections.getCollection, { name: "p" });
+    expect(before?.pendingFields).toContain("brand");
+    await t.mutation(api.configSync.clearPendingFields, { collection: "p" });
+    const after = await t.query(api.collections.getCollection, { name: "p" });
+    expect(after?.pendingFields ?? []).toEqual([]);
+  });
+
+  it("clearPendingFields throws for an unknown collection", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await expect(
+      t.mutation(api.configSync.clearPendingFields, { collection: "nope" }),
+    ).rejects.toThrow();
+  });
+});
