@@ -161,7 +161,6 @@ const result = await search.search(ctx, {
   "reranked": true,           // false for a ranking-profile tail page / capped set
   "page": 1,
   "out_of": 6,                // total documents in the collection
-  "search_time_ms": 3,
   "hits": [
     {
       "id": "1",              // consumer-provided document id

@@ -122,7 +122,7 @@ export function Storefront() {
 
         <p>
           {result
-            ? `${result.found_approximate ? "≈" : ""}${result.found} results · ${result.search_time_ms} ms${
+            ? `${result.found_approximate ? "≈" : ""}${result.found} results${
                 boostEnabled ? (result.reranked ? " · lean re-rank (window)" : " · base-order tail") : ""
               }`
             : "Loading…"}
@@ -207,7 +207,7 @@ function IndexStats({
   stats:
     | {
         out_of: number;
-        facets: { field: string; distinctValues: number; total: number }[];
+        facets: { field: string; distinctValues: number; total: number; truncated: boolean }[];
         sortSpecs: { specId: string; count: number }[];
       }
     | undefined;
@@ -247,7 +247,7 @@ function IndexStats({
       {stats.facets.length === 0 && <div style={{ fontSize: 12, color: "#999" }}>none declared</div>}
       {stats.facets.map((f) => (
         <div key={f.field} style={row}>
-          <span>{f.field} · {f.distinctValues} values</span>
+          <span>{f.field} · {f.truncated ? "≥" : ""}{f.distinctValues} values</span>
           <span>total {f.total} {facetMark(f.total)}</span>
         </div>
       ))}

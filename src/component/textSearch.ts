@@ -32,8 +32,11 @@ export async function matchTokens(
   // 1. Candidates + selectivity per token.
   const perToken: { candidates: Candidates; est: number }[] = [];
   const matchedTerms = new Set<string>();
+  let candidateTruncated = false;
   for (let i = 0; i < tokens.length; i++) {
-    const candidates = await candidateTermsForToken(ctx, collection, tokens[i], i === tokens.length - 1);
+    const result = await candidateTermsForToken(ctx, collection, tokens[i], i === tokens.length - 1);
+    const candidates = result.candidates;
+    candidateTruncated ||= result.truncated;
     let est = 0;
     for (const [term, c] of candidates) {
       matchedTerms.add(term);
@@ -63,7 +66,7 @@ export async function matchTokens(
   // Early exit: if any token has zero candidates, the AND intersection is empty.
   for (const tok of perToken) {
     if (tok.candidates.size === 0) {
-      return { scoreById: new Map(), matchedTerms, truncated: false, singleExactTerm };
+      return { scoreById: new Map(), matchedTerms, truncated: candidateTruncated, singleExactTerm };
     }
   }
 
@@ -73,7 +76,7 @@ export async function matchTokens(
   //    before the cap could apply, blowing the per-query read limit.
   const driverScore = new Map<string, number>();
   let read = 0;
-  let truncated = false;
+  let truncated = candidateTruncated;
   outer: for (const [term, c] of driver.candidates) {
     const stream = ctx.db
       .query("postings")

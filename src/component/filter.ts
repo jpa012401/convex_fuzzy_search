@@ -2,6 +2,7 @@ import type { QueryCtx } from "./_generated/server";
 
 export type Predicate = (stored: Record<string, unknown>) => boolean;
 export type FieldType = "string" | "number";
+export const FILTER_RESULT_BUDGET = 4000;
 
 export type Ast =
   | { kind: "and"; left: Ast; right: Ast }
@@ -191,22 +192,31 @@ export function parseFilter(input: string, fieldTypes: Record<string, FieldType>
   return astToPredicate(parseFilterAst(input, fieldTypes));
 }
 
-async function strIds(ctx: QueryCtx, collection: string, field: string, value: string): Promise<string[]> {
+type ResolveResult = { ids: Set<string>; truncated: boolean };
+
+function rowsToResult(rows: { docId: string }[], budget: number): ResolveResult {
+  return {
+    ids: new Set(rows.slice(0, budget).map((r) => r.docId)),
+    truncated: rows.length > budget,
+  };
+}
+
+async function strIds(ctx: QueryCtx, collection: string, field: string, value: string, budget: number): Promise<ResolveResult> {
   const rows = await ctx.db
     .query("filters")
     .withIndex("by_str", (q) => q.eq("collection", collection).eq("field", field).eq("strVal", value))
-    .collect();
-  return rows.map((r) => r.docId);
+    .take(budget + 1);
+  return rowsToResult(rows, budget);
 }
 // Numeric filter fields are written with `numVal = Number(value)` only when coercible; rows lacking `numVal` must never match numeric comparisons.
-async function numEqIds(ctx: QueryCtx, collection: string, field: string, num: number): Promise<string[]> {
+async function numEqIds(ctx: QueryCtx, collection: string, field: string, num: number, budget: number): Promise<ResolveResult> {
   const rows = await ctx.db
     .query("filters")
     .withIndex("by_num", (q) => q.eq("collection", collection).eq("field", field).eq("numVal", num))
-    .collect();
-  return rows.map((r) => r.docId);
+    .take(budget + 1);
+  return rowsToResult(rows, budget);
 }
-async function numCmpIds(ctx: QueryCtx, collection: string, field: string, op: string, num: number): Promise<string[]> {
+async function numCmpIds(ctx: QueryCtx, collection: string, field: string, op: string, num: number, budget: number): Promise<ResolveResult> {
   const rows = await ctx.db
     .query("filters")
     .withIndex("by_num", (q) => {
@@ -216,54 +226,63 @@ async function numCmpIds(ctx: QueryCtx, collection: string, field: string, op: s
         : op === "<" ? b.lt("numVal", num)
         : b.lte("numVal", num);
     })
-    .collect();
-  return rows.filter((r) => r.numVal !== undefined).map((r) => r.docId);
+    .take(budget + 1);
+  return rowsToResult(rows.filter((r) => r.numVal !== undefined), budget);
 }
-async function numRangeIds(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number): Promise<string[]> {
+async function numRangeIds(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number, budget: number): Promise<ResolveResult> {
   const rows = await ctx.db
     .query("filters")
     .withIndex("by_num", (q) => q.eq("collection", collection).eq("field", field).gte("numVal", lo).lte("numVal", hi))
-    .collect();
-  return rows.filter((r) => r.numVal !== undefined).map((r) => r.docId);
+    .take(budget + 1);
+  return rowsToResult(rows.filter((r) => r.numVal !== undefined), budget);
 }
 
 export async function resolveAstToDocIds(
   ctx: QueryCtx,
   collection: string,
   ast: Ast,
-): Promise<Set<string>> {
+  budget: number = FILTER_RESULT_BUDGET,
+): Promise<ResolveResult> {
   switch (ast.kind) {
     case "and": {
-      const a = await resolveAstToDocIds(ctx, collection, ast.left);
-      const b = await resolveAstToDocIds(ctx, collection, ast.right);
-      const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+      const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
+      const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
+      const [small, big] = a.ids.size <= b.ids.size ? [a.ids, b.ids] : [b.ids, a.ids];
       const out = new Set<string>();
       for (const id of small) if (big.has(id)) out.add(id);
-      return out;
+      return { ids: out, truncated: a.truncated || b.truncated };
     }
     case "or": {
-      const a = await resolveAstToDocIds(ctx, collection, ast.left);
-      const b = await resolveAstToDocIds(ctx, collection, ast.right);
-      for (const id of b) a.add(id);
-      return a;
+      const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
+      const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
+      for (const id of b.ids) {
+        if (a.ids.size >= budget) return { ids: a.ids, truncated: true };
+        a.ids.add(id);
+      }
+      return { ids: a.ids, truncated: a.truncated || b.truncated };
     }
     case "exact":
-      return new Set(ast.type === "number"
-        ? await numEqIds(ctx, collection, ast.field, Number(ast.value))
-        : await strIds(ctx, collection, ast.field, ast.value));
+      return ast.type === "number"
+        ? await numEqIds(ctx, collection, ast.field, Number(ast.value), budget)
+        : await strIds(ctx, collection, ast.field, ast.value, budget);
     case "inSet": {
       const out = new Set<string>();
+      let truncated = false;
       for (const v of ast.values) {
-        const ids = ast.type === "number"
-          ? await numEqIds(ctx, collection, ast.field, Number(v))
-          : await strIds(ctx, collection, ast.field, v);
-        for (const id of ids) out.add(id);
+        const result = ast.type === "number"
+          ? await numEqIds(ctx, collection, ast.field, Number(v), budget)
+          : await strIds(ctx, collection, ast.field, v, budget);
+        truncated ||= result.truncated;
+        for (const id of result.ids) {
+          if (out.size >= budget) return { ids: out, truncated: true };
+          out.add(id);
+        }
       }
-      return out;
+      return { ids: out, truncated };
     }
     case "cmp":
-      return new Set(await numCmpIds(ctx, collection, ast.field, ast.op, ast.num));
+      return await numCmpIds(ctx, collection, ast.field, ast.op, ast.num, budget);
     case "range":
-      return new Set(await numRangeIds(ctx, collection, ast.field, ast.lo, ast.hi));
+      return await numRangeIds(ctx, collection, ast.field, ast.lo, ast.hi, budget);
   }
 }

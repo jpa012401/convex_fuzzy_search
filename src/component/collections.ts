@@ -1,15 +1,26 @@
-import { mutation, query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { clearCollectionCount } from "./counters";
-import { clearCollectionFacets } from "./facetCounts";
 import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
 import type { Infer } from "convex/values";
-import { rankProfileValidator, rankTermValidator } from "./schema";
+import { collectionDocValidator, rankProfileValidator, rankTermValidator, sortSpecValidator } from "./schema";
+import type { SortKey } from "./ranking";
+
+const DELETE_BATCH_SIZE = 25;
+const DELETE_BATCHES_PER_PUBLIC_CALL = 64;
 
 export async function loadCollection(ctx: QueryCtx, name: string) {
   return await ctx.db
     .query("collections")
+    .withIndex("by_name", (q) => q.eq("name", name))
+    .unique();
+}
+
+async function loadDeletion(ctx: QueryCtx, name: string) {
+  return await ctx.db
+    .query("deletions")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
 }
@@ -20,6 +31,120 @@ export async function requireCollection(ctx: QueryCtx, name: string) {
     throw new Error(`CollectionNotFound: "${name}"`);
   }
   return c;
+}
+
+async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<boolean> {
+  const [doc, posting, term, trigram, filter, facet] = await Promise.all([
+    ctx.db
+      .query("documents")
+      .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+      .first(),
+    ctx.db
+      .query("postings")
+      .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+      .first(),
+    ctx.db
+      .query("terms")
+      .withIndex("by_collection_term", (q) => q.eq("collection", name))
+      .first(),
+    ctx.db
+      .query("trigrams")
+      .withIndex("by_collection_term", (q) => q.eq("collection", name))
+      .first(),
+    ctx.db
+      .query("filters")
+      .withIndex("by_doc", (q) => q.eq("collection", name))
+      .first(),
+    ctx.db
+      .query("facetCounts")
+      .withIndex("by_field", (q) => q.eq("collection", name))
+      .first(),
+  ]);
+  return !!(doc || posting || term || trigram || filter || facet);
+}
+
+async function blockIfDeletionInProgress(ctx: QueryCtx, name: string): Promise<void> {
+  if ((await loadDeletion(ctx, name)) || (await hasCollectionIndexRows(ctx, name))) {
+    throw new Error(`Collection "${name}" deletion in progress`);
+  }
+}
+
+async function deleteCollectionRowsBatch(
+  ctx: MutationCtx,
+  name: string,
+  batchSize: number,
+): Promise<boolean> {
+  const postings = await ctx.db
+    .query("postings")
+    .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (postings.length > 0) {
+    for (const r of postings) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const documents = await ctx.db
+    .query("documents")
+    .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (documents.length > 0) {
+    for (const r of documents) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const terms = await ctx.db
+    .query("terms")
+    .withIndex("by_collection_term", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (terms.length > 0) {
+    for (const r of terms) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const trigrams = await ctx.db
+    .query("trigrams")
+    .withIndex("by_collection_term", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (trigrams.length > 0) {
+    for (const r of trigrams) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const filters = await ctx.db
+    .query("filters")
+    .withIndex("by_doc", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (filters.length > 0) {
+    for (const r of filters) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const facets = await ctx.db
+    .query("facetCounts")
+    .withIndex("by_field", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (facets.length > 0) {
+    for (const r of facets) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  return true;
+}
+
+async function cleanupCollectionBatchInternal(
+  ctx: MutationCtx,
+  name: string,
+  sortSpecs: SortKey[][],
+  batchSize: number,
+): Promise<{ done: boolean }> {
+  const done = await deleteCollectionRowsBatch(ctx, name, batchSize);
+  if (!done) return { done: false };
+
+  await clearCollectionCount(ctx, name);
+  await clearCollectionSort(ctx, name, sortSpecs);
+  const deletion = await loadDeletion(ctx, name);
+  if (deletion) await ctx.db.delete(deletion._id);
+  return { done: true };
 }
 
 export function validateCollectionConfig(args: {
@@ -117,11 +242,13 @@ export const createCollection = mutation({
     ),
     rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const existing = await loadCollection(ctx, args.name);
     if (existing !== null) {
       throw new Error(`Collection "${args.name}" already exists`);
     }
+    await blockIfDeletionInProgress(ctx, args.name);
     const storedFields = args.storedFields ?? "all";
     validateCollectionConfig({ ...args, storedFields });
     await ctx.db.insert("collections", {
@@ -133,41 +260,74 @@ export const createCollection = mutation({
       sortSpecs: args.sortSpecs,
       rankProfiles: args.rankProfiles,
     });
+    return null;
   },
 });
 
 export const getCollection = query({
   args: { name: v.string() },
+  returns: v.union(collectionDocValidator, v.null()),
   handler: async (ctx, args) => loadCollection(ctx, args.name),
 });
 
 export const deleteCollection = mutation({
   args: { name: v.string() },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const c = await requireCollection(ctx, args.name);
-    for (const table of ["postings", "documents"] as const) {
-      const rows = await ctx.db
-        .query(table)
-        .withIndex("by_collection_doc", (q) => q.eq("collection", args.name))
-        .collect();
-      for (const r of rows) await ctx.db.delete(r._id);
+    const existingDeletion = await loadDeletion(ctx, args.name);
+    if (!existingDeletion) {
+      await ctx.db.insert("deletions", {
+        name: args.name,
+        sortSpecs: c.sortSpecs ?? [],
+      });
     }
-    // terms + trigrams are keyed by [collection, term], not [collection, docId]
-    for (const table of ["terms", "trigrams"] as const) {
-      const rows = await ctx.db
-        .query(table)
-        .withIndex("by_collection_term", (q) => q.eq("collection", args.name))
-        .collect();
-      for (const r of rows) await ctx.db.delete(r._id);
-    }
-    const filterRows = await ctx.db
-      .query("filters")
-      .withIndex("by_doc", (q) => q.eq("collection", args.name))
-      .collect();
-    for (const r of filterRows) await ctx.db.delete(r._id);
-    await clearCollectionCount(ctx, args.name);
-    await clearCollectionFacets(ctx, args.name);
-    await clearCollectionSort(ctx, args.name, c.sortSpecs ?? []);
     await ctx.db.delete(c._id);
+
+    let result: { done: boolean } = { done: false };
+    for (let i = 0; i < DELETE_BATCHES_PER_PUBLIC_CALL && !result.done; i++) {
+      result = await cleanupCollectionBatchInternal(
+        ctx,
+        args.name,
+        c.sortSpecs ?? [],
+        DELETE_BATCH_SIZE,
+      );
+    }
+    if (!result.done) {
+      await ctx.scheduler.runAfter(0, internal.collections.cleanupCollectionBatch, {
+        name: args.name,
+        sortSpecs: c.sortSpecs ?? [],
+        batchSize: DELETE_BATCH_SIZE,
+      });
+    }
+    return null;
+  },
+});
+
+export const cleanupCollectionBatch = internalMutation({
+  args: {
+    name: v.string(),
+    sortSpecs: v.array(sortSpecValidator),
+    batchSize: v.optional(v.number()),
+    scheduleNext: v.optional(v.boolean()),
+  },
+  returns: v.object({ done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const batchSize = Math.max(1, Math.floor(args.batchSize ?? DELETE_BATCH_SIZE));
+    const result = await cleanupCollectionBatchInternal(
+      ctx,
+      args.name,
+      args.sortSpecs,
+      batchSize,
+    );
+    if (!result.done && (args.scheduleNext ?? true)) {
+      await ctx.scheduler.runAfter(0, internal.collections.cleanupCollectionBatch, {
+        name: args.name,
+        sortSpecs: args.sortSpecs,
+        batchSize,
+        scheduleNext: true,
+      });
+    }
+    return result;
   },
 });

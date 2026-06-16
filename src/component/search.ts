@@ -11,11 +11,13 @@ import { collectionCount, pageDocIds } from "./counters";
 import { readFacetCounts } from "./facetCounts";
 import { specMatches, canonicalSpecId, pageSortedDocIds, pageSortedDocIdsRange } from "./sortIndex";
 import { evalTerms } from "./score";
+import { searchResultValidator } from "./schema";
 import type { SearchResult, Hit, FacetCount } from "./types";
 
 const MAX_PER_PAGE = 250;
 const DEFAULT_RERANK_WINDOW = 200;
 const MAX_RERANK_WINDOW = 1000;
+const CUSTOM_ORDER_WINDOW = DEFAULT_RERANK_WINDOW;
 
 // Load only the named docs (bounded by ids.length, not the collection).
 async function loadDocs(
@@ -73,8 +75,8 @@ export const search = query({
       }),
     ),
   },
+  returns: searchResultValidator,
   handler: async (ctx, args): Promise<SearchResult> => {
-    const start = Date.now();
     const collection = await requireCollection(ctx, args.collection);
     const page = Math.max(1, Math.floor(args.page ?? 1));
     const perPage = Math.min(MAX_PER_PAGE, Math.max(1, Math.floor(args.perPage ?? 10)));
@@ -105,7 +107,7 @@ export const search = query({
     if (tokens.length === 0 && !hasFilter && !hasFacets && !hasCustomOrder) {
       const ids = await pageDocIds(ctx, args.collection, (page - 1) * perPage, perPage);
       const hits: Hit[] = ids.map((id) => ({ id, score: 0, highlight: {} }));
-      return { found: out_of, found_approximate: false, reranked: true, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts: [] };
+      return { found: out_of, found_approximate: false, reranked: true, page, out_of, hits, facet_counts: [] };
     }
 
     // ---- LEAN BROWSE + FACETS: empty q, no filter, no custom order -> page off
@@ -121,7 +123,7 @@ export const search = query({
         const counts = await readFacetCounts(ctx, args.collection, field, maxValues);
         facet_counts.push({ field_name: field, counts });
       }
-      return { found: out_of, found_approximate: false, reranked: true, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+      return { found: out_of, found_approximate: false, reranked: true, page, out_of, hits, facet_counts };
     }
 
     // ---- LEAN BROWSE + SORT: empty q, no filter, no rankBy, and sortBy matches
@@ -150,20 +152,23 @@ export const search = query({
             facet_counts.push({ field_name: field, counts });
           }
         }
-        return { found: out_of, found_approximate: false, reranked: true, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+        return { found: out_of, found_approximate: false, reranked: true, page, out_of, hits, facet_counts };
       }
     }
 
     // ---- Resolve filter to a docId set via the index (S2), if present.
     let filterIds: Set<string> | null = null;
+    let filterTruncated = false;
     if (hasFilter) {
       const fieldTypes: Record<string, "string" | "number"> = {};
       for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
-      filterIds = await resolveAstToDocIds(
+      const resolved = await resolveAstToDocIds(
         ctx,
         args.collection,
         parseFilterAst(args.filterBy as string, fieldTypes),
       );
+      filterIds = resolved.ids;
+      filterTruncated = resolved.truncated;
     }
 
     // ---- Build the working set (byId) + match ids + scores.
@@ -172,6 +177,7 @@ export const search = query({
     const matchedTerms = new Set<string>();
     let byId: Map<string, unknown>;
     let truncated = false;
+    let windowTruncated = false;
     let singleExactTerm: string | null = null;
     let reranked = true;
 
@@ -188,26 +194,29 @@ export const search = query({
     } else if (filterIds) {
       // BROWSE + FILTER: the filter set is the result set (no full-collection load).
       matchedIds = [...filterIds];
-      byId = await loadDocs(ctx, args.collection, matchedIds);
+      if (!hasFacets && !hasCustomOrder) {
+        const pageStart = (page - 1) * perPage;
+        byId = await loadDocs(ctx, args.collection, matchedIds.slice(pageStart, pageStart + perPage));
+      } else {
+        byId = await loadDocs(ctx, args.collection, matchedIds);
+      }
     } else if (hasRank) {
       // RANK BROWSE: candidate window off the profile's base sortSpec (batched).
       const windowSize = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile!.window ?? DEFAULT_RERANK_WINDOW)));
       matchedIds = await pageSortedDocIdsRange(ctx, args.collection, rankProfile!.base, windowSize);
       byId = await loadDocs(ctx, args.collection, matchedIds);
     } else {
-      // BROWSE + facets/custom-order but NO filter: still full load (S3/S4 replace this).
-      const allDocs = await ctx.db
-        .query("documents")
-        .withIndex("by_collection_doc", (q) => q.eq("collection", args.collection))
-        .collect();
-      byId = new Map(allDocs.map((d) => [d.docId, d.stored]));
-      matchedIds = allDocs.map((d) => d.docId);
+      // BROWSE + custom-order but NO filter: rank a bounded aggregate window
+      // instead of loading the whole collection before pagination.
+      matchedIds = await pageDocIds(ctx, args.collection, 0, CUSTOM_ORDER_WINDOW);
+      windowTruncated = out_of > matchedIds.length;
+      byId = await loadDocs(ctx, args.collection, matchedIds);
     }
 
     const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
 
     let found = matchedIds.length;
-    let found_approximate = false;
+    let found_approximate = filterTruncated || windowTruncated;
     if (truncated) {
       found_approximate = true;
       // terms.docCount counts the term across ALL searchFields, so it is only an
@@ -223,6 +232,9 @@ export const search = query({
       }
     }
     if (hasRank && tokens.length === 0 && !filterIds) {
+      found = out_of;
+    }
+    if (windowTruncated && tokens.length === 0 && !filterIds) {
       found = out_of;
     }
 
@@ -316,6 +328,6 @@ export const search = query({
       return { id, score: rawScore(id), highlight };
     });
 
-    return { found, found_approximate, reranked, page, out_of, search_time_ms: Date.now() - start, hits, facet_counts };
+    return { found, found_approximate, reranked, page, out_of, hits, facet_counts };
   },
 });

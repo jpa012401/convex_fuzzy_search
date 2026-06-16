@@ -90,7 +90,7 @@ export class FuzzySearch {
     args: {
       name: string;
       searchFields: string[];
-      storedFields?: "all" | string[];
+      storedFields?: "all" | "derived" | string[];
       filterFields?: { field: string; type: "string" | "number" }[];
       facetFields?: string[];
       sortSpecs?: { field: string; order: "asc" | "desc" }[][];
@@ -168,7 +168,7 @@ export class FuzzySearch {
     collection: string,
   ): Promise<{
     out_of: number;
-    facets: { field: string; distinctValues: number; total: number }[];
+    facets: { field: string; distinctValues: number; total: number; truncated: boolean }[];
     sortSpecs: { specId: string; count: number }[];
   }> {
     return ctx.runQuery(this.component.stats.stats, { collection });

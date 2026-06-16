@@ -75,21 +75,71 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           sortSpecs?: Array<Array<{ field: string; order: "asc" | "desc" }>>;
           storedFields?: "all" | "derived" | Array<string>;
         },
-        any,
+        null,
         Name
       >;
       deleteCollection: FunctionReference<
         "mutation",
         "internal",
         { name: string },
-        any,
+        null,
         Name
       >;
       getCollection: FunctionReference<
         "query",
         "internal",
         { name: string },
-        any,
+        {
+          _creationTime: number;
+          _id: string;
+          facetFields?: Array<string>;
+          filterFields?: Array<{ field: string; type: "string" | "number" }>;
+          name: string;
+          pendingFields?: Array<string>;
+          rankProfiles?: Record<
+            string,
+            {
+              base: string;
+              terms: Array<
+                | { field: string; id: string; type: "field"; weight: number }
+                | {
+                    equals?: string;
+                    field: string;
+                    id: string;
+                    type: "flag";
+                    weight: number;
+                  }
+                | {
+                    field: string;
+                    id: string;
+                    setKey: string;
+                    type: "setBoost";
+                    weight: number;
+                  }
+                | {
+                    field: string;
+                    halfLifeMs: number;
+                    id: string;
+                    type: "recencyDecay";
+                    weight: number;
+                  }
+                | {
+                    id: string;
+                    latField: string;
+                    lngField: string;
+                    maxKm: number;
+                    type: "geoDistance";
+                    weight: number;
+                  }
+                | { id: string; type: "relevance"; weight: number }
+              >;
+              window?: number;
+            }
+          >;
+          searchFields: Array<string>;
+          sortSpecs?: Array<Array<{ field: string; order: "asc" | "desc" }>>;
+          storedFields: "all" | "derived" | Array<string>;
+        } | null,
         Name
       >;
     };
@@ -147,14 +197,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             storedFields?: "all" | "derived" | Array<string>;
           };
         },
-        any,
+        { kind: "create" | "update"; pendingFields: Array<string> },
         Name
       >;
       clearPendingFields: FunctionReference<
         "mutation",
         "internal",
         { collection: string },
-        any,
+        null,
         Name
       >;
     };
@@ -186,7 +236,25 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           };
           sortBy?: Array<{ field: string; order: "asc" | "desc" }>;
         },
-        any,
+        {
+          facet_counts: Array<{
+            counts: Array<{ count: number; value: string }>;
+            field_name: string;
+          }>;
+          found: number;
+          found_approximate: boolean;
+          hits: Array<{
+            highlight: Record<
+              string,
+              { matched_tokens: Array<string>; snippet: string }
+            >;
+            id: string;
+            score: number;
+          }>;
+          out_of: number;
+          page: number;
+          reranked: boolean;
+        },
         Name
       >;
     };
@@ -195,7 +263,16 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { collection: string },
-        any,
+        {
+          facets: Array<{
+            distinctValues: number;
+            field: string;
+            total: number;
+            truncated: boolean;
+          }>;
+          out_of: number;
+          sortSpecs: Array<{ count: number; specId: string }>;
+        },
         Name
       >;
     };
@@ -204,28 +281,28 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         { collection: string; id: string },
-        any,
+        null,
         Name
       >;
       deleteDoc: FunctionReference<
         "mutation",
         "internal",
         { collection: string; id: string },
-        any,
+        null,
         Name
       >;
       upsert: FunctionReference<
         "mutation",
         "internal",
         { collection: string; doc: any; id: string },
-        any,
+        null,
         Name
       >;
       upsertMany: FunctionReference<
         "mutation",
         "internal",
         { collection: string; docs: Array<{ doc: any; id: string }> },
-        any,
+        null,
         Name
       >;
     };

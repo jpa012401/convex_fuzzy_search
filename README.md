@@ -44,8 +44,8 @@ Found a bug? Feature request?
 - **Structured filtering (`filterBy`)** — exact, in-set, numeric comparators and
   ranges, combined with `&&`/`||` and parentheses.
 - **Faceting (`facet_counts`)** — value counts for declared facet fields.
-- **Result envelope** — `{ found, found_approximate, page, out_of,
-  search_time_ms, hits, facet_counts }`.
+- **Result envelope** — `{ found, found_approximate, reranked, page, out_of,
+  hits, facet_counts }`.
 - **Synchronous writes** — searchable the moment the mutation commits; no
   indexing lag.
 - **Collections** — named, with their own search fields and stored projection.
@@ -115,9 +115,9 @@ runnable example.
 {
   "found": 2,              // total matches across all pages
   "found_approximate": false, // true only when a hot-term scan was capped (see Scale)
+  "reranked": true,
   "page": 1,
   "out_of": 6,             // total documents in the collection
-  "search_time_ms": 3,
   "hits": [
     {
       "document": { /* stored projection of the matched doc */ },

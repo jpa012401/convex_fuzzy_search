@@ -87,8 +87,8 @@ Initial release — full-text search entirely inside Convex.
 - Weighted ranking (`rankBy`, Elasticsearch `field_value_factor`-style blend) and
   multi-key sort (`sortBy`) — ordering only; `text_match` stays raw.
 - Field-scoped queries (`queryBy`), browse mode (empty query), and a
-  Typesense-shaped result envelope (`{ found, page, out_of, search_time_ms, hits,
-  facet_counts }`).
+  Typesense-shaped result envelope (`{ found, found_approximate, reranked, page,
+  out_of, hits, facet_counts }`).
 - Collections with configurable `searchFields` and `storedFields` projection;
   consumer-provided string `id` with replace-on-upsert; synchronous indexing.
 

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { convexTest } from "convex-test";
+import { register as registerAggregate } from "@convex-dev/aggregate/test";
+import { api } from "./_generated/api";
 import schema from "./schema";
 import {
   incrementFacet,
@@ -61,6 +63,33 @@ describe("facetCounts helpers", () => {
       expect(await readFacetCounts(ctx, "shop", "category", 10)).toEqual([]);
       // other collection untouched
       expect(await readFacetCounts(ctx, "other", "brand", 10)).toEqual([{ value: "Aurora", count: 1 }]);
+    });
+  });
+
+  it("stats reports high-cardinality facet truncation", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "shop",
+      searchFields: ["name"],
+      facetFields: ["brand"],
+    });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 210; i++) {
+        await ctx.db.insert("facetCounts", {
+          collection: "shop",
+          field: "brand",
+          value: `brand-${i}`,
+          count: 1,
+        });
+      }
+    });
+    const stats = await t.query(api.stats.stats, { collection: "shop" });
+    expect(stats.facets[0]).toMatchObject({
+      field: "brand",
+      distinctValues: 200,
+      total: 200,
+      truncated: true,
     });
   });
 });

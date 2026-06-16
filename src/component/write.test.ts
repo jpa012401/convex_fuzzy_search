@@ -218,4 +218,17 @@ describe("write path", () => {
     // ...but produces zero postings, so it can never match a text query.
     expect(await postingsFor(t, "p1")).toEqual([]);
   });
+
+  it("rejects oversized upsertMany batches", async () => {
+    const t = await setup();
+    await expect(
+      t.mutation(api.write.upsertMany, {
+        collection: "products",
+        docs: Array.from({ length: 51 }, (_, i) => ({
+          id: `p${i}`,
+          doc: { name: `product ${i}`, price: i },
+        })),
+      }),
+    ).rejects.toThrow(/at most 50/);
+  });
 });

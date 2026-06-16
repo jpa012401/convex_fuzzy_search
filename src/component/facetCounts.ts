@@ -1,5 +1,7 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
+export const FACET_VALUE_READ_BUDGET = 200;
+
 // Increment the count for one (collection, field, value), creating the row on
 // first sight. Used by the write path when a doc gains a facet value.
 export async function incrementFacet(
@@ -49,7 +51,7 @@ export async function readFacetCounts(
   const rows = await ctx.db
     .query("facetCounts")
     .withIndex("by_field", (q) => q.eq("collection", collection).eq("field", field))
-    .collect();
+    .take(FACET_VALUE_READ_BUDGET);
   return rows
     .sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0))
     .slice(0, Math.max(0, maxValues))

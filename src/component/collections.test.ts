@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { convexTest } from "convex-test";
 import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "./schema";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -84,6 +84,55 @@ describe("collections", () => {
     expect(leftover.postings).toEqual([]);
     expect(leftover.terms).toEqual([]);
     expect(leftover.trigrams).toEqual([]);
+  });
+
+  it("continues large collection cleanup in bounded internal batches before allowing recreate", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "products",
+      searchFields: ["name"],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "products",
+      docs: Array.from({ length: 30 }, (_, i) => ({
+        id: `p${String(i).padStart(2, "0")}`,
+        doc: { name: `shared searchable product ${i}` },
+      })),
+    });
+
+    await t.run(async (ctx) => {
+      const collection = await ctx.db
+        .query("collections")
+        .withIndex("by_name", (q) => q.eq("name", "products"))
+        .unique();
+      if (!collection) throw new Error("missing collection");
+      await ctx.db.delete(collection._id);
+    });
+    await expect(
+      t.mutation(api.collections.createCollection, {
+        name: "products",
+        searchFields: ["name"],
+      }),
+    ).rejects.toThrow(/deletion in progress/);
+
+    for (let i = 0; i < 200; i++) {
+      const result = await t.mutation(internal.collections.cleanupCollectionBatch, {
+        name: "products",
+        sortSpecs: [],
+        batchSize: 5,
+        scheduleNext: false,
+      });
+      if (result.done) break;
+      if (i === 199) throw new Error("cleanup did not finish");
+    }
+
+    await t.mutation(api.collections.createCollection, {
+      name: "products",
+      searchFields: ["name"],
+    });
+    const recreated = await t.query(api.collections.getCollection, { name: "products" });
+    expect(recreated).toMatchObject({ name: "products" });
   });
 });
 

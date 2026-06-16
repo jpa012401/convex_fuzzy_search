@@ -68,7 +68,16 @@ describe("search", () => {
     const t = await setup();
     const r = await t.query(api.search.search, { collection: "products", q: "zzz" });
     expect(r).toMatchObject({ found: 0, hits: [], facet_counts: [] });
-    expect(typeof r.search_time_ms).toBe("number");
+    expect("search_time_ms" in r).toBe(false);
+  });
+
+  it("returns deterministic output for identical search inputs", async () => {
+    const t = await setup();
+    const args = { collection: "products", q: "red", page: 1, perPage: 10 };
+    const first = await t.query(api.search.search, args);
+    const second = await t.query(api.search.search, args);
+    expect(second).toEqual(first);
+    expect("search_time_ms" in first).toBe(false);
   });
 
   it("returns id + score + highlight, not document", async () => {
@@ -308,6 +317,35 @@ describe("highlighting + weighted sort", () => {
     });
     // only the two "running" docs match; ordered by popularity (100 > 1)
     expect(r.hits.map((h: any) => h.id)).toEqual(["2", "1"]);
+  });
+
+  it("empty-query custom rankBy uses a bounded window and marks broad results approximate", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "many",
+      searchFields: ["name"],
+      storedFields: "all",
+    });
+    const docs = Array.from({ length: 210 }, (_, i) => ({
+        id: `p${String(i).padStart(3, "0")}`,
+        doc: { name: `product ${i}`, popularity: i },
+      }));
+    for (let i = 0; i < docs.length; i += 50) {
+      await t.mutation(api.write.upsertMany, {
+        collection: "many",
+        docs: docs.slice(i, i + 50),
+      });
+    }
+    const r = await t.query(api.search.search, {
+      collection: "many",
+      q: "",
+      rankBy: { fields: [{ field: "popularity", weight: 1 }] },
+      perPage: 10,
+    });
+    expect(r.found).toBe(210);
+    expect(r.found_approximate).toBe(true);
+    expect(r.hits).toHaveLength(10);
   });
 });
 

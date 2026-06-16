@@ -12,6 +12,7 @@ import type { SortKey } from "./ranking";
 import { indexRelevantFields } from "./storedFields";
 
 type Doc = Record<string, unknown>;
+export const MAX_UPSERT_MANY_BATCH = 50;
 
 function project(doc: Doc, col: ConvexDoc<"collections">): Doc {
   const storedFields = col.storedFields;
@@ -139,17 +140,22 @@ async function upsertInternal(
 
 export const upsert = mutation({
   args: { collection: v.string(), id: v.string(), doc: v.any() },
-  handler: async (ctx, args) =>
-    upsertInternal(ctx, args.collection, args.id, args.doc as Doc),
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await upsertInternal(ctx, args.collection, args.id, args.doc as Doc);
+    return null;
+  },
 });
 
 export const deleteDoc = mutation({
   args: { collection: v.string(), id: v.string() },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const col = await requireCollection(ctx, args.collection);
     const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? [], col.sortSpecs ?? []);
     await applyTermDiff(ctx, args.collection, oldTerms, new Set());
     if (existed) await removeDoc(ctx, args.collection, args.id);
+    return null;
   },
 });
 
@@ -158,11 +164,16 @@ export const upsertMany = mutation({
     collection: v.string(),
     docs: v.array(v.object({ id: v.string(), doc: v.any() })),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
+    if (args.docs.length > MAX_UPSERT_MANY_BATCH) {
+      throw new Error(`upsertMany accepts at most ${MAX_UPSERT_MANY_BATCH} documents per call`);
+    }
     await requireCollection(ctx, args.collection);
     for (const { id, doc } of args.docs) {
       await upsertInternal(ctx, args.collection, id, doc as Doc);
     }
+    return null;
   },
 });
 

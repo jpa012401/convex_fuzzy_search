@@ -11,6 +11,10 @@ export type ApplyConfigResult = { kind: "create" | "update"; pendingFields: stri
 // Metadata changes apply in place. Does NOT read documents.
 export const applyCollectionConfig = mutation({
   args: { config: collectionConfigValidator },
+  returns: v.object({
+    kind: v.union(v.literal("create"), v.literal("update")),
+    pendingFields: v.array(v.string()),
+  }),
   handler: async (ctx, { config }): Promise<ApplyConfigResult> => {
     // applyCollectionConfig defaults storedFields to "derived" by design
     // (vs createCollection's "all"): config-synced collections store the
@@ -43,8 +47,10 @@ export const applyCollectionConfig = mutation({
 // its documents through upsert (which rebuilt the newly-added field's index rows).
 export const clearPendingFields = mutation({
   args: { collection: v.string() },
+  returns: v.null(),
   handler: async (ctx, { collection }) => {
     const c = await requireCollection(ctx, collection);
     await ctx.db.patch(c._id, { pendingFields: [] });
+    return null;
   },
 });

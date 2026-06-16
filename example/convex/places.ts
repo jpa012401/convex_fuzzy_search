@@ -6,6 +6,7 @@ import { generatePlaceRange } from "./placesData";
 
 const COLLECTION = "places";
 const NINETY_DAYS_MS = 7_776_000_000;
+const MAX_COMPONENT_BATCH = 50;
 
 const search = new FuzzySearch(components.fuzzySearch, {
   collections: {
@@ -42,6 +43,12 @@ async function putDocs(ctx: MutationCtx, docs: { id: string; doc: Record<string,
   }
 }
 
+async function upsertSearchDocs(ctx: MutationCtx, docs: { id: string; doc: Record<string, unknown> }[]) {
+  for (let i = 0; i < docs.length; i += 50) {
+    await search.upsertMany(ctx, { collection: COLLECTION, docs: docs.slice(i, i + 50) });
+  }
+}
+
 async function hydrate(ctx: QueryCtx, hits: { id: string; score: number; highlight: any }[]) {
   const rows = await Promise.all(
     hits.map((h) => ctx.db.query("placeDocs").withIndex("by_docId", (q) => q.eq("docId", h.id)).unique()),
@@ -58,7 +65,7 @@ export const seedPlaces = mutation({
     const n = total ?? 120;
     const now = Date.now();
     const docs = generatePlaceRange(0, n, now);
-    await search.upsertMany(ctx, { collection: COLLECTION, docs });
+    await upsertSearchDocs(ctx, docs);
     await putDocs(ctx, docs);
     return { seeded: n, now };
   },
@@ -67,7 +74,7 @@ export const seedPlaces = mutation({
 export const reindexPlaces = mutation({
   args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
   handler: async (ctx, { cursor, batch }) => {
-    const size = batch ?? 10;
+    const size = Math.min(batch ?? 10, MAX_COMPONENT_BATCH);
     const page = await ctx.db.query("placeDocs")
       .withIndex("by_docId", (q) => (cursor == null ? q : q.gt("docId", cursor))).take(size + 1);
     const rows = page.slice(0, size);

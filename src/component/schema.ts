@@ -17,6 +17,13 @@ export const rankProfileValidator = v.object({
   terms: v.array(rankTermValidator),
 });
 
+export const sortKeyValidator = v.object({
+  field: v.string(),
+  order: v.union(v.literal("asc"), v.literal("desc")),
+});
+
+export const sortSpecValidator = v.array(sortKeyValidator);
+
 export type RankTerm = Infer<typeof rankTermValidator>;
 export type RankProfile = Infer<typeof rankProfileValidator>;
 
@@ -39,16 +46,68 @@ export const collectionConfigValidator = v.object({
   ),
   facetFields: v.optional(v.array(v.string())),
   sortSpecs: v.optional(
-    v.array(
-      v.array(
-        v.object({
-          field: v.string(),
-          order: v.union(v.literal("asc"), v.literal("desc")),
-        }),
-      ),
-    ),
+    v.array(sortSpecValidator),
   ),
   rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
+});
+
+export const collectionDocValidator = v.object({
+  _id: v.id("collections"),
+  _creationTime: v.number(),
+  name: v.string(),
+  searchFields: v.array(v.string()),
+  storedFields: v.union(v.literal("all"), v.literal("derived"), v.array(v.string())),
+  filterFields: v.optional(
+    v.array(
+      v.object({
+        field: v.string(),
+        type: v.union(v.literal("string"), v.literal("number")),
+      }),
+    ),
+  ),
+  facetFields: v.optional(v.array(v.string())),
+  sortSpecs: v.optional(
+    v.array(sortSpecValidator),
+  ),
+  rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
+  pendingFields: v.optional(v.array(v.string())),
+});
+
+export const hitValidator = v.object({
+  id: v.string(),
+  score: v.number(),
+  highlight: v.record(
+    v.string(),
+    v.object({ snippet: v.string(), matched_tokens: v.array(v.string()) }),
+  ),
+});
+
+export const facetCountValidator = v.object({
+  field_name: v.string(),
+  counts: v.array(v.object({ value: v.string(), count: v.number() })),
+});
+
+export const searchResultValidator = v.object({
+  found: v.number(),
+  found_approximate: v.boolean(),
+  reranked: v.boolean(),
+  page: v.number(),
+  out_of: v.number(),
+  hits: v.array(hitValidator),
+  facet_counts: v.array(facetCountValidator),
+});
+
+export const statsResultValidator = v.object({
+  out_of: v.number(),
+  facets: v.array(
+    v.object({
+      field: v.string(),
+      distinctValues: v.number(),
+      total: v.number(),
+      truncated: v.boolean(),
+    }),
+  ),
+  sortSpecs: v.array(v.object({ specId: v.string(), count: v.number() })),
 });
 
 export default defineSchema({
@@ -67,17 +126,15 @@ export default defineSchema({
     ),
     facetFields: v.optional(v.array(v.string())),
     sortSpecs: v.optional(
-      v.array(
-        v.array(
-          v.object({
-            field: v.string(),
-            order: v.union(v.literal("asc"), v.literal("desc")),
-          }),
-        ),
-      ),
+      v.array(sortSpecValidator),
     ),
     rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
     pendingFields: v.optional(v.array(v.string())),
+  }).index("by_name", ["name"]),
+
+  deletions: defineTable({
+    name: v.string(),
+    sortSpecs: v.array(sortSpecValidator),
   }).index("by_name", ["name"]),
 
   documents: defineTable({

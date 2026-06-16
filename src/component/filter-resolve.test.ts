@@ -22,7 +22,7 @@ async function seedFilters(t: any) {
 }
 const resolve = async (t: any, expr: string): Promise<Set<string>> => {
   const ids: string[] = await t.run(async (ctx: any) =>
-    [...(await resolveAstToDocIds(ctx, "shop", parseFilterAst(expr, types)))],
+    [...(await resolveAstToDocIds(ctx, "shop", parseFilterAst(expr, types))).ids],
   );
   return new Set(ids);
 };
@@ -53,5 +53,26 @@ describe("resolveAstToDocIds", () => {
     // "x" has undefined numVal -> must be excluded from < and <=.
     expect(sorted(await resolve(t, "price:<100"))).toEqual(["a"]);
     expect(sorted(await resolve(t, "price:<=90"))).toEqual(["a"]);
+  });
+
+  it("caps broad filter reads and reports truncation", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.run(async (ctx: any) => {
+      for (let i = 0; i < 8; i++) {
+        await ctx.db.insert("filters", {
+          collection: "shop",
+          field: "brand",
+          docId: `p${i}`,
+          strVal: "Aurora",
+        });
+      }
+    });
+    const result = await t.run(async (ctx: any) => {
+      const resolved = await resolveAstToDocIds(ctx, "shop", parseFilterAst("brand:Aurora", types), 3);
+      return { size: resolved.ids.size, truncated: resolved.truncated };
+    });
+    expect(result.size).toBeLessThanOrEqual(3);
+    expect(result.truncated).toBe(true);
   });
 });

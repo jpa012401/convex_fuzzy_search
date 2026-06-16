@@ -5,6 +5,7 @@ import { FuzzySearch } from "@elevatech/fuzzy-search";
 import { generateRange, DEFAULT_PROFILE, type Profile } from "./dataset";
 
 const COLLECTION = "products";
+const MAX_COMPONENT_BATCH = 50;
 
 // recencyDecay needs an absolute ms timestamp; the dataset stores the relative
 // releasedDaysAgo. Derive releasedAt from the real current time at seed so the
@@ -182,7 +183,7 @@ export const seed = mutation({
 export const seedChain = mutation({
   args: { start: v.number(), total: v.number(), batch: v.number() },
   handler: async (ctx, { start, total, batch }) => {
-    const count = Math.min(batch, total - start);
+    const count = Math.min(batch, MAX_COMPONENT_BATCH, total - start);
     const profile = await loadProfile(ctx); // affinity scored against current prefs
     const now = Date.now();
     const docs = generateRange(start, count, profile);
@@ -204,7 +205,7 @@ export const startSeed = mutation({
   args: { total: v.optional(v.number()), batch: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const total = args.total ?? 5000;
-    const batch = args.batch ?? 50;
+    const batch = Math.min(args.batch ?? MAX_COMPONENT_BATCH, MAX_COMPONENT_BATCH);
     // sync() is idempotent: it creates the collection if missing and reconciles
     // config in place otherwise. We never drop+recreate a large collection here —
     // deleteCollection reads every index row in one mutation and would exceed
@@ -228,7 +229,7 @@ export const reindex = mutation({
     // READS the doc's whole index footprint (postings/terms/trigrams/filters),
     // so the per-doc read cost is far higher than a fresh insert. Batches above
     // ~10-20 risk the 4,096-reads-per-call limit on docs with many terms.
-    const size = batch ?? 10;
+    const size = Math.min(batch ?? 10, MAX_COMPONENT_BATCH);
     const page = await ctx.db
       .query("productDocs")
       .withIndex("by_docId", (q) => (cursor == null ? q : q.gt("docId", cursor)))
@@ -324,11 +325,12 @@ export const benchmark = action({
     ];
     const out = [];
     for (const c of cases) {
+      const start = Date.now();
       const r: any = await ctx.runQuery(api.products.searchProducts, c.args as any);
       out.push({
         label: c.label,
         found: r.found,
-        ms: r.search_time_ms,
+        ms: Date.now() - start,
         top: r.hits[0]?.document?.name,
       });
     }

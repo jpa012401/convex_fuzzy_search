@@ -11,6 +11,7 @@ import {
 import { type ComponentApi } from "../component/_generated/component.js";
 import { componentsGeneric } from "convex/server";
 import { register } from "../test.js";
+import { FuzzySearch } from "./index.js";
 
 export function initConvexTest<
   Schema extends SchemaDefinition<GenericSchema, boolean>,
@@ -24,3 +25,11 @@ export const components = componentsGeneric() as unknown as {
 };
 
 test("setup", () => {});
+
+test("createCollection accepts derived storedFields", () => {
+  const _args = {
+    name: "products",
+    searchFields: ["name"],
+    storedFields: "derived",
+  } satisfies Parameters<FuzzySearch["createCollection"]>[1];
+});
