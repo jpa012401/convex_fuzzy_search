@@ -1,5 +1,13 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
+// TODO: Current chunking uses fixed docKey ranges (0-63 → bucket 0, 64-127 → bucket 1, etc.)
+// This means rare terms with few postings create sparse chunks (e.g., 2 entries in a 64-slot bucket).
+// Observed: 18,162 chunks for 5,120 docs (~3.5 chunks/doc) due to many unique/rare terms.
+// Future optimizations to consider:
+// - Fill-based chunking (trade-off: write contention with OCC)
+// - Adaptive chunk sizes for rare vs common terms
+// - Lazy background compaction of sparse chunks
+// - Skip chunking for terms below a posting threshold
 export const POSTING_CHUNK_SIZE = 64;
 
 export type DocTerm = {
