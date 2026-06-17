@@ -37,6 +37,7 @@ export function Storefront() {
   const [prefCats, setPrefCats] = useState<string[]>([]);
   const seed = useMutation(api.products.seed);
   const startSeed = useMutation(api.products.startSeed);
+  const recomputeAffinities = useMutation(api.products.recomputeAffinities);
   const profile = useQuery(api.products.getProfile);
   const setProfile = useMutation(api.products.setProfile);
   const indexStats = useQuery(api.products.indexStats);
@@ -45,14 +46,14 @@ export function Storefront() {
 
   const onLoad5k = async () => {
     setLoadMsg("Seeding 5,000 products in the background — the result count will climb live as batches land.");
-    await startSeed({});
+    await startSeed({ reset: true });
     setPage(1);
   };
 
   const onSavePrefs = async (p: Profile) => {
     setPrefsMsg("Saving + re-personalizing 5,000 products in the background (~1 min)…");
     await setProfile(p);
-    await startSeed({}); // recomputes affinity against the new profile
+    await recomputeAffinities({});
     setPage(1);
   };
 

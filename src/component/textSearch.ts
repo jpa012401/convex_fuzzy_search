@@ -1,5 +1,7 @@
 import type { QueryCtx } from "./_generated/server";
 import { candidateTermsForToken } from "./matching";
+import { loadDocumentByDocKey } from "./docKeys";
+import { loadDocTerms, readTermPostings } from "./postingChunks";
 
 // Max postings rows read while collecting the driver token. Headroom under the
 // ~4096 reads/query limit. Exceeding it truncates the driver scan (approximate).
@@ -70,37 +72,31 @@ export async function matchTokens(
     }
   }
 
-  // 3. Collect driver postings (budget-capped) -> docId -> best driver score.
+  // 3. Collect driver postings (budget-capped) -> docKey -> best driver score.
   //    Stream with `for await` and stop at the budget so we actually READ at
-  //    most `budget` rows — `.collect()` would read every posting of a hot term
+  //    most `budget` entries — collecting a hot term without a cap
   //    before the cap could apply, blowing the per-query read limit.
-  const driverScore = new Map<string, number>();
+  const driverScore = new Map<number, number>();
   let read = 0;
   let truncated = candidateTruncated;
   outer: for (const [term, c] of driver.candidates) {
-    const stream = ctx.db
-      .query("postings")
-      .withIndex("by_collection_term", (q) => q.eq("collection", collection).eq("term", term));
-    for await (const r of stream) {
+    for await (const r of readTermPostings(ctx, collection, term)) {
       if (read >= budget) { truncated = true; break outer; }
       read++;
       if (queryBy && !queryBy.includes(r.field)) continue;
-      const cur = driverScore.get(r.docId);
-      if (cur === undefined || c.score > cur) driverScore.set(r.docId, c.score);
+      const cur = driverScore.get(r.docKey);
+      if (cur === undefined || c.score > cur) driverScore.set(r.docKey, c.score);
     }
   }
 
-  // 4. Verify the other tokens per driver doc. Read each doc's postings ONCE,
+  // 4. Verify the other tokens per driver doc. Read each doc's terms ONCE,
   //    then check every non-driver token against that single term set.
   const others = perToken.filter((_, i) => i !== driverIdx);
   const scoreById = new Map<string, number>();
-  for (const [docId, dScore] of driverScore) {
+  for (const [docKey, dScore] of driverScore) {
     let present: Map<string, number> | null = null;
     if (others.length > 0) {
-      const postings = await ctx.db
-        .query("postings")
-        .withIndex("by_collection_doc", (q) => q.eq("collection", collection).eq("docId", docId))
-        .collect();
+      const postings = await loadDocTerms(ctx, collection, docKey);
       present = new Map<string, number>();
       for (const p of postings) {
         if (queryBy && !queryBy.includes(p.field)) continue;
@@ -114,7 +110,10 @@ export async function matchTokens(
       if (s === undefined) { ok = false; break; }
       total += s;
     }
-    if (ok) scoreById.set(docId, total);
+    if (ok) {
+      const doc = await loadDocumentByDocKey(ctx, collection, docKey);
+      if (doc) scoreById.set(doc.docId, total);
+    }
   }
 
   return { scoreById, matchedTerms, truncated, singleExactTerm };

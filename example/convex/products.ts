@@ -2,7 +2,8 @@ import { action, mutation, query, QueryCtx, MutationCtx } from "./_generated/ser
 import { v } from "convex/values";
 import { components, api } from "./_generated/api";
 import { FuzzySearch } from "@elevatech/fuzzy-search";
-import { generateRange, DEFAULT_PROFILE, type Profile } from "./dataset";
+import { generateRange, computeAffinity, DEFAULT_PROFILE, type Profile } from "./dataset";
+import type { Id } from "./_generated/dataModel";
 
 const COLLECTION = "products";
 const MAX_COMPONENT_BATCH = 50;
@@ -83,13 +84,31 @@ export const sync = mutation({
   handler: async (ctx) => search.sync(ctx),
 });
 
-// The app owns the serving copy: write each doc to productDocs alongside the
-// component upsert, so search results can be hydrated by id afterwards.
-async function putDocs(ctx: MutationCtx, docs: { id: string; doc: Record<string, unknown> }[]) {
-  for (const { id, doc } of docs) {
-    const existing = await ctx.db.query("productDocs").withIndex("by_docId", (q) => q.eq("docId", id)).unique();
-    if (existing) await ctx.db.patch(existing._id, { doc });
-    else await ctx.db.insert("productDocs", { docId: id, doc });
+// The app owns the serving copy: insert each doc into productDocs and index it
+// under the table's Convex `_id` (passed to the component as a string id).
+async function insertAndIndex(
+  ctx: MutationCtx,
+  docs: Record<string, unknown>[],
+): Promise<{ id: Id<"productDocs">; doc: Record<string, unknown> }[]> {
+  const entries: { id: Id<"productDocs">; doc: Record<string, unknown> }[] = [];
+  for (const doc of docs) {
+    const id = await ctx.db.insert("productDocs", { doc });
+    entries.push({ id, doc });
+  }
+  for (let i = 0; i < entries.length; i += MAX_COMPONENT_BATCH) {
+    await search.upsertMany(ctx, {
+      collection: COLLECTION,
+      docs: entries.slice(i, i + MAX_COMPONENT_BATCH).map(({ id, doc }) => ({ id, doc })),
+    });
+  }
+  return entries;
+}
+
+async function clearAllProductDocs(ctx: MutationCtx): Promise<void> {
+  for (;;) {
+    const rows = await ctx.db.query("productDocs").take(100);
+    if (rows.length === 0) return;
+    for (const row of rows) await ctx.db.delete(row._id);
   }
 }
 
@@ -97,7 +116,7 @@ async function putDocs(ctx: MutationCtx, docs: { id: string; doc: Record<string,
 // the returned order. Adds a `document` field shaped like what ProductGrid renders.
 async function hydrate(ctx: QueryCtx, hits: { id: string; score: number; highlight: any }[]) {
   const rows = await Promise.all(
-    hits.map((h) => ctx.db.query("productDocs").withIndex("by_docId", (q) => q.eq("docId", h.id)).unique()),
+    hits.map((h) => ctx.db.get("productDocs", h.id as Id<"productDocs">)),
   );
   return hits.map((h, i) => ({ ...h, document: (rows[i]?.doc ?? {}) as Record<string, unknown> }));
 }
@@ -140,12 +159,12 @@ export const setProfile = mutation({
 
 // --- small demo seed (6 hand-written products) -----------------------------
 const SAMPLE = [
-  { id: "1", name: "Aurora Running Shoe", description: "lightweight road running shoe", brand: "Aurora", category: "Shoes", price: 89, popularity: 50, image: "https://picsum.photos/seed/1/300" },
-  { id: "2", name: "Aurora Trail Shoe", description: "grippy off-road trail shoe", brand: "Aurora", category: "Shoes", price: 109, popularity: 10, image: "https://picsum.photos/seed/2/300" },
-  { id: "3", name: "Nimbus Rain Jacket", description: "waterproof breathable jacket", brand: "Nimbus", category: "Outerwear", price: 149, popularity: 95, image: "https://picsum.photos/seed/3/300" },
-  { id: "4", name: "Nimbus Wool Hat", description: "warm merino wool hat", brand: "Nimbus", category: "Accessories", price: 29, popularity: 80, image: "https://picsum.photos/seed/4/300" },
-  { id: "5", name: "Vertex Yoga Mat", description: "non slip cushioned yoga mat", brand: "Vertex", category: "Fitness", price: 39, popularity: 30, image: "https://picsum.photos/seed/5/300" },
-  { id: "6", name: "Vertex Water Bottle", description: "insulated stainless steel bottle", brand: "Vertex", category: "Fitness", price: 25, popularity: 99, image: "https://picsum.photos/seed/6/300" },
+  { name: "Aurora Running Shoe", description: "lightweight road running shoe", brand: "Aurora", category: "Shoes", price: 89, popularity: 50, image: "https://picsum.photos/seed/aurora-running/300" },
+  { name: "Aurora Trail Shoe", description: "grippy off-road trail shoe", brand: "Aurora", category: "Shoes", price: 109, popularity: 10, image: "https://picsum.photos/seed/aurora-trail/300" },
+  { name: "Nimbus Rain Jacket", description: "waterproof breathable jacket", brand: "Nimbus", category: "Outerwear", price: 149, popularity: 95, image: "https://picsum.photos/seed/nimbus-jacket/300" },
+  { name: "Nimbus Wool Hat", description: "warm merino wool hat", brand: "Nimbus", category: "Accessories", price: 29, popularity: 80, image: "https://picsum.photos/seed/nimbus-hat/300" },
+  { name: "Vertex Yoga Mat", description: "non slip cushioned yoga mat", brand: "Vertex", category: "Fitness", price: 39, popularity: 30, image: "https://picsum.photos/seed/vertex-mat/300" },
+  { name: "Vertex Water Bottle", description: "insulated stainless steel bottle", brand: "Vertex", category: "Fitness", price: 25, popularity: 99, image: "https://picsum.photos/seed/vertex-bottle/300" },
 ];
 
 export const seed = mutation({
@@ -153,25 +172,21 @@ export const seed = mutation({
   handler: async (ctx) => {
     const existing = await search.getCollection(ctx, COLLECTION);
     if (existing) await search.deleteCollection(ctx, COLLECTION);
+    await clearAllProductDocs(ctx);
     await search.sync(ctx);
     const now = Date.now();
-    const docs = SAMPLE.map(({ id, ...rest }) => ({ id, doc: withReleasedAt({ id, ...rest }, now) }));
-    await search.upsertMany(ctx, { collection: COLLECTION, docs });
-    await putDocs(ctx, docs);
+    const docs = SAMPLE.map((rest) => withReleasedAt(rest, now));
+    await insertAndIndex(ctx, docs);
     return { seeded: SAMPLE.length };
   },
 });
 
 // --- large synthetic dataset (batched, driven by an action) ----------------
 
-// NOTE on resetting at scale: the component's deleteCollection reads every
-// index row (postings/terms/trigrams) for the collection in ONE mutation, which
-// exceeds Convex's 4096-reads-per-call limit once a few hundred docs are
-// indexed. So we never delete a large collection: re-seeding the deterministic
-// ids just UPSERTS (replace semantics), and sync() reconciles config in place.
-// Only the small `seed` mutation does an explicit drop+sync for a clean reset,
-// where the delete is cheap at 6 docs. (A scalable batched deleteCollection is
-// a Phase 4 task.)
+// NOTE on resetting at scale: deleteCollection is batched inside the component,
+// so large collections can be dropped safely. Re-seeding with Convex `_id`s always
+// inserts fresh app rows; use `reset: true` on startSeed to clear productDocs
+// before a new background load.
 
 
 // Indexes one batch, then schedules the next — a self-chaining background load.
@@ -186,10 +201,8 @@ export const seedChain = mutation({
     const count = Math.min(batch, MAX_COMPONENT_BATCH, total - start);
     const profile = await loadProfile(ctx); // affinity scored against current prefs
     const now = Date.now();
-    const docs = generateRange(start, count, profile);
-    const docs2 = docs.map((d) => ({ id: d.id, doc: withReleasedAt(d.doc, now) }));
-    await search.upsertMany(ctx, { collection: COLLECTION, docs: docs2 });
-    await putDocs(ctx, docs2);
+    const docs = generateRange(start, count, profile).map((doc) => withReleasedAt(doc, now));
+    await insertAndIndex(ctx, docs);
     const next = start + count;
     if (next < total) {
       await ctx.scheduler.runAfter(0, api.products.seedChain, { start: next, total, batch });
@@ -198,22 +211,134 @@ export const seedChain = mutation({
   },
 });
 
-// Kicks off a full large-dataset load in the background. Ensures a full-config
-// collection exists (without deleting a large one — re-seeding upserts), then
-// schedules the chain. Returns immediately.
+export const clearProductDocs = mutation({
+  args: {
+    cursor: v.optional(v.union(v.string(), v.null())),
+    thenSeed: v.optional(v.object({ total: v.number(), batch: v.number() })),
+  },
+  handler: async (ctx, { cursor, thenSeed }) => {
+    const page = await ctx.db.query("productDocs").paginate({
+      numItems: MAX_COMPONENT_BATCH,
+      cursor: cursor ?? null,
+    });
+    for (const row of page.page) await ctx.db.delete(row._id);
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, api.products.clearProductDocs, {
+        cursor: page.continueCursor,
+        thenSeed,
+      });
+      return { deleted: page.page.length, done: false };
+    }
+    if (thenSeed) {
+      await ctx.scheduler.runAfter(0, api.products.seedChain, {
+        start: 0,
+        total: thenSeed.total,
+        batch: thenSeed.batch,
+      });
+    }
+    return { deleted: page.page.length, done: true };
+  },
+});
+
+// Kicks off a full large-dataset load in the background. Ensures config exists,
+// optionally clears app + index rows, then schedules the insert chain.
 export const startSeed = mutation({
-  args: { total: v.optional(v.number()), batch: v.optional(v.number()) },
+  args: {
+    total: v.optional(v.number()),
+    batch: v.optional(v.number()),
+    reset: v.optional(v.boolean()),
+  },
   handler: async (ctx, args) => {
     const total = args.total ?? 5000;
     const batch = Math.min(args.batch ?? MAX_COMPONENT_BATCH, MAX_COMPONENT_BATCH);
-    // sync() is idempotent: it creates the collection if missing and reconciles
-    // config in place otherwise. We never drop+recreate a large collection here —
-    // deleteCollection reads every index row in one mutation and would exceed
-    // Convex's 4096-reads-per-call limit once a few hundred docs are indexed
-    // (re-seeding the deterministic ids just upserts with replace semantics).
     await search.sync(ctx);
-    await ctx.scheduler.runAfter(0, api.products.seedChain, { start: 0, total, batch });
-    return { scheduled: total, batch };
+    if (args.reset) {
+      const existing = await search.getCollection(ctx, COLLECTION);
+      if (existing) await search.deleteCollection(ctx, COLLECTION);
+      await ctx.scheduler.runAfter(0, api.products.clearProductDocs, {
+        cursor: null,
+        thenSeed: { total, batch },
+      });
+      return { scheduled: total, batch, reset: true };
+    }
+    const any = await ctx.db.query("productDocs").first();
+    if (!any) {
+      await ctx.scheduler.runAfter(0, api.products.seedChain, { start: 0, total, batch });
+      return { scheduled: total, batch };
+    }
+    await ctx.scheduler.runAfter(0, api.products.recomputeAffinities, { cursor: null, batch });
+    return { recompute: true, batch };
+  },
+});
+
+// Recompute stored affinity for every productDoc and replay through the index.
+// Used after profile edits so existing Convex ids stay stable.
+export const recomputeAffinities = mutation({
+  args: {
+    cursor: v.optional(v.union(v.string(), v.null())),
+    batch: v.optional(v.number()),
+  },
+  handler: async (ctx, { cursor, batch }) => {
+    const size = Math.min(batch ?? MAX_COMPONENT_BATCH, MAX_COMPONENT_BATCH);
+    const profile = await loadProfile(ctx);
+    const page = await ctx.db.query("productDocs").paginate({
+      numItems: size,
+      cursor: cursor ?? null,
+    });
+    const docs = [];
+    for (const row of page.page) {
+      const doc = { ...(row.doc as Record<string, unknown>) };
+      doc.affinity = computeAffinity(
+        {
+          category: String(doc.category ?? ""),
+          brand: String(doc.brand ?? ""),
+          name: String(doc.name ?? ""),
+          description: String(doc.description ?? ""),
+        },
+        profile,
+      );
+      await ctx.db.patch(row._id, { doc });
+      docs.push({ id: row._id, doc });
+    }
+    if (docs.length > 0) {
+      await search.upsertMany(ctx, { collection: COLLECTION, docs });
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, api.products.recomputeAffinities, {
+        cursor: page.continueCursor,
+        batch,
+      });
+    }
+    return { updated: docs.length, done: page.isDone };
+  },
+});
+
+export const updateProduct = mutation({
+  args: { id: v.id("productDocs"), doc: v.any() },
+  handler: async (ctx, args) => {
+    const doc = args.doc as Record<string, unknown>;
+    await ctx.db.patch(args.id, { doc });
+    await search.upsert(ctx, { collection: COLLECTION, id: args.id, doc });
+    return { ok: true };
+  },
+});
+
+export const deleteProduct = mutation({
+  args: { id: v.id("productDocs") },
+  handler: async (ctx, args) => {
+    await search.delete(ctx, { collection: COLLECTION, id: args.id });
+    await ctx.db.delete(args.id);
+    return { ok: true };
+  },
+});
+
+export const dropProducts = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await search.getCollection(ctx, COLLECTION);
+    if (existing) await search.deleteCollection(ctx, COLLECTION);
+    await clearAllProductDocs(ctx);
+    return { ok: true };
   },
 });
 
@@ -226,26 +351,27 @@ export const reindex = mutation({
   args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
   handler: async (ctx, { cursor, batch }) => {
     // Small default batch: each replayed upsert does a clear-then-rebuild that
-    // READS the doc's whole index footprint (postings/terms/trigrams/filters),
+    // READS the doc's whole index footprint (postingChunks/docTerms/trigrams/filters),
     // so the per-doc read cost is far higher than a fresh insert. Batches above
     // ~10-20 risk the 4,096-reads-per-call limit on docs with many terms.
     const size = Math.min(batch ?? 10, MAX_COMPONENT_BATCH);
-    const page = await ctx.db
-      .query("productDocs")
-      .withIndex("by_docId", (q) => (cursor == null ? q : q.gt("docId", cursor)))
-      .take(size + 1);
-    const rows = page.slice(0, size);
-    await search.upsertMany(ctx, {
-      collection: COLLECTION,
-      docs: rows.map((r) => ({ id: r.docId, doc: r.doc })),
+    const page = await ctx.db.query("productDocs").paginate({
+      numItems: size,
+      cursor: cursor ?? null,
     });
-    const done = page.length <= size;
-    if (!done) {
-      await ctx.scheduler.runAfter(0, api.products.reindex, { cursor: rows[rows.length - 1].docId, batch });
+    const rows = page.page;
+    if (rows.length > 0) {
+      await search.upsertMany(ctx, {
+        collection: COLLECTION,
+        docs: rows.map((r) => ({ id: r._id, doc: r.doc as Record<string, unknown> })),
+      });
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, api.products.reindex, { cursor: page.continueCursor, batch });
     } else {
       await search.clearPending(ctx, COLLECTION);
     }
-    return { indexed: rows.length, done };
+    return { indexed: rows.length, done: page.isDone };
   },
 });
 

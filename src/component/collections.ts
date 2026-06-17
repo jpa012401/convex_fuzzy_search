@@ -34,14 +34,22 @@ export async function requireCollection(ctx: QueryCtx, name: string) {
 }
 
 async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<boolean> {
-  const [doc, posting, term, trigram, filter, facet] = await Promise.all([
+  const [doc, docTerm, postingChunk, docKeyCounter, term, trigram, filter, facet] = await Promise.all([
     ctx.db
       .query("documents")
       .withIndex("by_collection_doc", (q) => q.eq("collection", name))
       .first(),
     ctx.db
-      .query("postings")
-      .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+      .query("docTerms")
+      .withIndex("by_collection_docKey", (q) => q.eq("collection", name))
+      .first(),
+    ctx.db
+      .query("postingChunks")
+      .withIndex("by_collection_term", (q) => q.eq("collection", name))
+      .first(),
+    ctx.db
+      .query("docKeyCounters")
+      .withIndex("by_collection", (q) => q.eq("collection", name))
       .first(),
     ctx.db
       .query("terms")
@@ -60,7 +68,7 @@ async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<bool
       .withIndex("by_field", (q) => q.eq("collection", name))
       .first(),
   ]);
-  return !!(doc || posting || term || trigram || filter || facet);
+  return !!(doc || docTerm || postingChunk || docKeyCounter || term || trigram || filter || facet);
 }
 
 async function blockIfDeletionInProgress(ctx: QueryCtx, name: string): Promise<void> {
@@ -74,12 +82,21 @@ async function deleteCollectionRowsBatch(
   name: string,
   batchSize: number,
 ): Promise<boolean> {
-  const postings = await ctx.db
-    .query("postings")
-    .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+  const postingChunks = await ctx.db
+    .query("postingChunks")
+    .withIndex("by_collection_term", (q) => q.eq("collection", name))
     .take(batchSize);
-  if (postings.length > 0) {
-    for (const r of postings) await ctx.db.delete(r._id);
+  if (postingChunks.length > 0) {
+    for (const r of postingChunks) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const docTerms = await ctx.db
+    .query("docTerms")
+    .withIndex("by_collection_docKey", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (docTerms.length > 0) {
+    for (const r of docTerms) await ctx.db.delete(r._id);
     return false;
   }
 
@@ -89,6 +106,15 @@ async function deleteCollectionRowsBatch(
     .take(batchSize);
   if (documents.length > 0) {
     for (const r of documents) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const docKeyCounters = await ctx.db
+    .query("docKeyCounters")
+    .withIndex("by_collection", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (docKeyCounters.length > 0) {
+    for (const r of docKeyCounters) await ctx.db.delete(r._id);
     return false;
   }
 

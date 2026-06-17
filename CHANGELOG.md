@@ -91,6 +91,14 @@ Initial release — full-text search entirely inside Convex.
   out_of, hits, facet_counts }`).
 - Collections with configurable `searchFields` and `storedFields` projection;
   consumer-provided string `id` with replace-on-upsert; synchronous indexing.
+- **Chunked inverted index** (`docTerms`, `postingChunks`, internal `docKey` per
+  document) instead of a flat one-row-per-(term, doc, field) postings table —
+  reduces index row count while preserving search semantics.
+
+### Changed
+
+- Each indexed document gets a monotonic internal `docKey` for compact index joins;
+  the consumer-facing `id` string is unchanged.
 
 [Unreleased]: https://github.com/elevatech/fuzzy-search/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/elevatech/fuzzy-search/releases/tag/v0.1.0

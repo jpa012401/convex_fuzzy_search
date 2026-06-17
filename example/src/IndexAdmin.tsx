@@ -39,7 +39,7 @@ export function IndexAdmin() {
         <StatsPanel label="places" stats={placeStats} />
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button onClick={() => run("seed products", () => seedProducts({ total: 200, batch: 50 }))}>Seed products (200)</button>
+        <button onClick={() => run("seed products", () => seedProducts({ total: 200, batch: 50, reset: true }))}>Seed products (200)</button>
         <button onClick={() => run("seed places", () => seedPlaces({ total: 120 }))}>Seed places (120)</button>
         <button onClick={() => run("sync products", () => syncProducts({}))}>Sync products</button>
         <button onClick={() => run("sync places", () => syncPlaces({}))}>Sync places</button>

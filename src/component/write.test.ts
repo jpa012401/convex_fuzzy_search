@@ -17,15 +17,23 @@ async function setup() {
   return t;
 }
 
-async function postingsFor(t: any, docId: string) {
-  return await t.run(async (ctx: any) =>
-    ctx.db
-      .query("postings")
+async function docTermsFor(t: any, docId: string) {
+  return await t.run(async (ctx: any) => {
+    const doc = await ctx.db
+      .query("documents")
       .withIndex("by_collection_doc", (q: any) =>
         q.eq("collection", "products").eq("docId", docId),
       )
-      .collect(),
-  );
+      .unique();
+    if (!doc) return [];
+    const row = await ctx.db
+      .query("docTerms")
+      .withIndex("by_collection_docKey", (q: any) =>
+        q.eq("collection", "products").eq("docKey", doc.docKey),
+      )
+      .unique();
+    return row?.terms ?? [];
+  });
 }
 
 describe("write path", () => {
@@ -36,7 +44,7 @@ describe("write path", () => {
       id: "p1",
       doc: { name: "Red Shoe", description: "running shoe", price: 50, secret: "x" },
     });
-    const postings = await postingsFor(t, "p1");
+    const postings = await docTermsFor(t, "p1");
     const terms = postings.map((p: any) => p.term).sort();
     expect(terms).toEqual(["red", "running", "shoe", "shoe"].sort());
     const docs = await t.run(async (ctx: any) =>
@@ -62,7 +70,7 @@ describe("write path", () => {
       id: "p1",
       doc: { name: "Blue Hat", description: "", price: 10 },
     });
-    const terms = (await postingsFor(t, "p1")).map((p: any) => p.term).sort();
+    const terms = (await docTermsFor(t, "p1")).map((p: any) => p.term).sort();
     expect(terms).toEqual(["blue", "hat"]);
   });
 
@@ -74,7 +82,7 @@ describe("write path", () => {
       doc: { name: "Red Shoe", description: "running shoe", price: 50 },
     });
     await t.mutation(api.write.delete, { collection: "products", id: "p1" });
-    expect(await postingsFor(t, "p1")).toEqual([]);
+    expect(await docTermsFor(t, "p1")).toEqual([]);
   });
 
   it("upsert on unknown collection throws CollectionNotFound", async () => {
@@ -215,8 +223,8 @@ describe("write path", () => {
         .unique(),
     );
     expect(stored?.stored).toEqual({ price: 50 });
-    // ...but produces zero postings, so it can never match a text query.
-    expect(await postingsFor(t, "p1")).toEqual([]);
+    // ...but produces zero indexed terms, so it can never match a text query.
+    expect(await docTermsFor(t, "p1")).toEqual([]);
   });
 
   it("rejects oversized upsertMany batches", async () => {

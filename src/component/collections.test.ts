@@ -45,7 +45,7 @@ describe("collections", () => {
     ).toBeNull();
   });
 
-  it("deleteCollection removes the collection, its documents, postings, terms, and trigrams", async () => {
+  it("deleteCollection removes the collection, its documents, posting chunks, terms, and trigrams", async () => {
     const t = convexTest(schema, modules);
     registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
@@ -67,9 +67,13 @@ describe("collections", () => {
         .query("documents")
         .withIndex("by_collection_doc", (q) => q.eq("collection", "products"))
         .collect(),
-      postings: await ctx.db
-        .query("postings")
-        .withIndex("by_collection_doc", (q) => q.eq("collection", "products"))
+      docTerms: await ctx.db
+        .query("docTerms")
+        .withIndex("by_collection_docKey", (q) => q.eq("collection", "products"))
+        .collect(),
+      postingChunks: await ctx.db
+        .query("postingChunks")
+        .withIndex("by_collection_term", (q) => q.eq("collection", "products"))
         .collect(),
       terms: await ctx.db
         .query("terms")
@@ -81,7 +85,8 @@ describe("collections", () => {
         .collect(),
     }));
     expect(leftover.docs).toEqual([]);
-    expect(leftover.postings).toEqual([]);
+    expect(leftover.docTerms).toEqual([]);
+    expect(leftover.postingChunks).toEqual([]);
     expect(leftover.terms).toEqual([]);
     expect(leftover.trigrams).toEqual([]);
   });

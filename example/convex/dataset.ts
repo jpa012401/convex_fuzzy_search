@@ -69,7 +69,6 @@ export const BRAND_OPTIONS = BRANDS_ALL;
 const BRANDS = BRANDS_ALL;
 
 export type Product = {
-  id: string;
   name: string;
   description: string;
   brand: string;
@@ -129,11 +128,9 @@ export function generateProduct(index: number, profile: Profile = DEFAULT_PROFIL
   const name = `${adj} ${noun} ${model}`;
   const description = `A ${adj} ${material} ${noun} with ${pick(r, FEATURES)} and ${pick(r, FEATURES)}, ideal for ${pick(r, USE_CASES)}.`;
 
-  const id = "p" + String(index + 1).padStart(5, "0");
   const affinity = computeAffinity({ category, brand, name, description }, profile);
 
   return {
-    id,
     name,
     description,
     brand,
@@ -147,18 +144,18 @@ export function generateProduct(index: number, profile: Profile = DEFAULT_PROFIL
     releasedDaysAgo: intIn(r, 0, 1000),
     inStock: r() < 0.85 ? "true" : "false",
     affinity,
-    image: `https://picsum.photos/seed/${id}/300`,
+    image: `https://picsum.photos/seed/product-${index + 1}/300`,
   };
 }
 
-// Generate a contiguous range of products as { id, doc } upsert entries,
-// scoring affinity against the supplied profile.
+// Generate a contiguous range of product docs, scoring affinity against the
+// supplied profile. Callers assign Convex `_id`s when persisting.
 export function generateRange(
   start: number,
   count: number,
   profile: Profile = DEFAULT_PROFILE,
 ) {
-  const out: { id: string; doc: Record<string, unknown> }[] = [];
+  const out: Record<string, unknown>[] = [];
   for (let i = start; i < start + count; i++) {
     const p = generateProduct(i, profile);
     // One category-membership flag (cat_<Category> = 1) enables INSTANT,
@@ -166,7 +163,7 @@ export function generateRange(
     // ranks Outdoors products up (others coerce 0). Independent of `affinity`.
     const doc: Record<string, unknown> = { ...(p as unknown as Record<string, unknown>) };
     doc["cat_" + p.category] = 1;
-    out.push({ id: p.id, doc });
+    out.push(doc);
   }
   return out;
 }

@@ -10,6 +10,15 @@ import { incrementFacet, decrementFacet } from "./facetCounts";
 import { addSortEntry, removeSortEntry } from "./sortIndex";
 import type { SortKey } from "./ranking";
 import { indexRelevantFields } from "./storedFields";
+import { ensureDocKey, loadDocumentByDocId } from "./docKeys";
+import {
+  addPostingEntries,
+  deleteDocTerms,
+  loadDocTerms,
+  removePostingEntries,
+  upsertDocTerms,
+} from "./postingChunks";
+import type { DocTerm } from "./postingChunks";
 
 type Doc = Record<string, unknown>;
 export const MAX_UPSERT_MANY_BATCH = 50;
@@ -25,7 +34,7 @@ function project(doc: Doc, col: ConvexDoc<"collections">): Doc {
   return out;
 }
 
-// Delete a doc's postings + document row; return its distinct terms (pre-deletion).
+// Delete a doc's index rows + document row; return its distinct terms (pre-deletion).
 async function clearDoc(
   ctx: MutationCtx,
   collection: string,
@@ -33,15 +42,6 @@ async function clearDoc(
   facetFields: string[],
   sortSpecs: SortKey[][],
 ): Promise<{ oldTerms: Set<string>; existed: boolean }> {
-  const postings = await ctx.db
-    .query("postings")
-    .withIndex("by_collection_doc", (q) =>
-      q.eq("collection", collection).eq("docId", docId),
-    )
-    .collect();
-  const oldTerms = new Set<string>(postings.map((p) => p.term));
-  for (const p of postings) await ctx.db.delete(p._id);
-
   const filt = await ctx.db
     .query("filters")
     .withIndex("by_doc", (q) =>
@@ -50,13 +50,14 @@ async function clearDoc(
     .collect();
   for (const r of filt) await ctx.db.delete(r._id);
 
-  const existing = await ctx.db
-    .query("documents")
-    .withIndex("by_collection_doc", (q) =>
-      q.eq("collection", collection).eq("docId", docId),
-    )
-    .unique();
+  const existing = await loadDocumentByDocId(ctx, collection, docId);
+  const oldTermEntries = existing
+    ? await loadDocTerms(ctx, collection, existing.docKey)
+    : [];
+  const oldTerms = new Set<string>(oldTermEntries.map((p) => p.term));
   if (existing) {
+    await removePostingEntries(ctx, collection, existing.docKey, oldTermEntries);
+    await deleteDocTerms(ctx, collection, existing.docKey);
     const stored = existing.stored as Record<string, unknown>;
     for (const field of facetFields) {
       const raw = stored[field];
@@ -79,9 +80,11 @@ async function upsertInternal(
   doc: Doc,
 ) {
   const col = await requireCollection(ctx, collection);
+  const docKey = await ensureDocKey(ctx, collection, id);
   const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? [], col.sortSpecs ?? []);
 
   const newTerms = new Set<string>();
+  const termEntries: DocTerm[] = [];
   for (const field of col.searchFields) {
     const value = doc[field];
     if (typeof value !== "string") continue;
@@ -91,13 +94,16 @@ async function upsertInternal(
       newTerms.add(term);
     }
     for (const [term, tf] of counts) {
-      await ctx.db.insert("postings", { collection, term, docId: id, field, tf });
+      termEntries.push({ term, field, tf });
     }
   }
+  await addPostingEntries(ctx, collection, docKey, termEntries);
+  await upsertDocTerms(ctx, collection, docKey, termEntries);
 
   await ctx.db.insert("documents", {
     collection,
     docId: id,
+    docKey,
     stored: project(doc, col),
   });
 

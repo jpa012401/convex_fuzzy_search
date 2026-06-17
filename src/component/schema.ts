@@ -140,18 +140,43 @@ export default defineSchema({
   documents: defineTable({
     collection: v.string(),
     docId: v.string(),
+    docKey: v.number(),
     stored: v.any(), // projected fields returned in hits
-  }).index("by_collection_doc", ["collection", "docId"]),
+  })
+    .index("by_collection_doc", ["collection", "docId"])
+    .index("by_collection_docKey", ["collection", "docKey"]),
 
-  postings: defineTable({
+  docKeyCounters: defineTable({
+    collection: v.string(),
+    nextDocKey: v.number(),
+  }).index("by_collection", ["collection"]),
+
+  docTerms: defineTable({
+    collection: v.string(),
+    docKey: v.number(),
+    terms: v.array(
+      v.object({
+        term: v.string(),
+        field: v.string(),
+        tf: v.number(),
+      }),
+    ),
+  }).index("by_collection_docKey", ["collection", "docKey"]),
+
+  postingChunks: defineTable({
     collection: v.string(),
     term: v.string(),
-    docId: v.string(),
-    field: v.string(), // source field (unused Phase 1; Phase 3 ranking)
-    tf: v.number(), // term frequency in that field (unused Phase 1; Phase 3)
+    bucket: v.number(),
+    entries: v.array(
+      v.object({
+        docKey: v.number(),
+        field: v.string(),
+        tf: v.number(),
+      }),
+    ),
   })
     .index("by_collection_term", ["collection", "term"])
-    .index("by_collection_doc", ["collection", "docId"]),
+    .index("by_collection_term_bucket", ["collection", "term", "bucket"]),
 
   terms: defineTable({
     collection: v.string(),

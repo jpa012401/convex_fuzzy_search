@@ -11,6 +11,7 @@ export default defineSchema({
     pastSearchTerms: v.array(v.string()),
   }).index("by_key", ["key"]),
   // The app owns the serving copy of products; the component holds only the index.
-  productDocs: defineTable({ docId: v.string(), doc: v.any() }).index("by_docId", ["docId"]),
+  // The table `_id` is the search document id passed to the component.
+  productDocs: defineTable({ doc: v.any() }),
   placeDocs: defineTable({ docId: v.string(), doc: v.any() }).index("by_docId", ["docId"]),
 });
