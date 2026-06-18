@@ -196,6 +196,7 @@ export default defineSchema({
     collection: v.string(),
     field: v.string(),
     docId: v.string(),
+    docKey: v.optional(v.number()),
     strVal: v.optional(v.string()),
     numVal: v.optional(v.number()),
   })

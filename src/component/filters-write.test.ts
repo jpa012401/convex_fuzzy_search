@@ -50,4 +50,21 @@ describe("write path maintains filter rows", () => {
     await t.mutation(api.collections.deleteCollection, { name: "shop" });
     expect(await filterRows(t, "p1")).toEqual([]);
   });
+
+  it("writes docKey on filter rows", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "fk",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "brand", type: "string" as const }],
+    });
+    await t.mutation(api.write.upsert, { collection: "fk", id: "x1", doc: { name: "a", brand: "Acme" } });
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("filters").withIndex("by_doc", (q) => q.eq("collection", "fk").eq("docId", "x1")).collect(),
+    );
+    expect(rows.length).toBe(1);
+    expect(typeof rows[0].docKey).toBe("number");
+  });
 });

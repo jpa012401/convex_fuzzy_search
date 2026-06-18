@@ -124,6 +124,7 @@ async function upsertInternal(
         collection,
         field: f.field,
         docId: id,
+        docKey,
         strVal: String(value),
       });
     } else {
@@ -133,6 +134,7 @@ async function upsertInternal(
           collection,
           field: f.field,
           docId: id,
+          docKey,
           numVal: num,
         });
       }
