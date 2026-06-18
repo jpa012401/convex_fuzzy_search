@@ -16,5 +16,5 @@ export type SearchResult = {
   page: number;
   out_of: number;
   hits: Hit[];
-  facet_counts: FacetCount[]; // empty in Phase 1
+  facet_counts: FacetCount[]; // per-field value tallies; empty unless facetBy is requested
 };
