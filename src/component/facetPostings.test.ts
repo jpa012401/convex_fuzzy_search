@@ -45,6 +45,27 @@ describe("facetPostings (fill-based)", () => {
     expect([...all]).toEqual([7]);
   });
 
+  it("appends to the tail bucket by fill, not by docKey value (distinguishes fill-based from fixed-floor)", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      // One small tail bucket (bucket 0) with a few low docKeys; it has room.
+      for (const k of [0, 1, 2]) await addFacetPostings(ctx, "c", k, [{ field: "f", value: "v" }]);
+      // A HIGH docKey: fixed-floor would put it in bucket floor(500/64)=7; fill-based
+      // appends it to the existing tail (bucket 0, which has room).
+      await addFacetPostings(ctx, "c", 500, [{ field: "f", value: "v" }]);
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("facetPostings")
+        .withIndex("by_collection_field_value", (q) => q.eq("collection", "c").eq("field", "f").eq("value", "v"))
+        .collect(),
+    );
+    // Fill-based: exactly ONE bucket (bucket 0) holding all four docKeys.
+    expect(rows.length).toBe(1);
+    expect(rows[0].bucket).toBe(0);
+    expect([...rows[0].docKeys].sort((a, b) => a - b)).toEqual([0, 1, 2, 500]);
+  });
+
   it("removes a docKey and deletes an emptied bucket", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
