@@ -66,4 +66,30 @@ describe("write path maintains facet counts", () => {
     await t.mutation(api.collections.createCollection, { name: "shop", searchFields: ["name"], storedFields: "all", facetFields: ["brand"] });
     expect(await brandCounts(t)).toEqual([]);
   });
+
+  it("maintains facetPostings on upsert and delete", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "fp",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "brand", type: "string" as const }],
+      facetFields: ["brand"],
+    });
+    await t.mutation(api.write.upsert, { collection: "fp", id: "a", doc: { name: "x", brand: "Acme" } });
+    const after = await t.run(async (ctx) => {
+      const rows = await ctx.db
+        .query("facetPostings")
+        .withIndex("by_collection_field_value", (q) => q.eq("collection", "fp").eq("field", "brand").eq("value", "Acme"))
+        .collect();
+      return rows.flatMap((r) => r.docKeys);
+    });
+    expect(after.length).toBe(1);
+    await t.mutation(api.write.delete, { collection: "fp", id: "a" });
+    const gone = await t.run(async (ctx) =>
+      ctx.db.query("facetPostings").withIndex("by_collection_field_value", (q) => q.eq("collection", "fp").eq("field", "brand").eq("value", "Acme")).collect(),
+    );
+    expect(gone.length).toBe(0); // emptied bucket deleted
+  });
 });

@@ -7,6 +7,7 @@ import { requireCollection } from "./collections";
 import { applyTermDiff } from "./terms";
 import { addDoc, removeDoc } from "./counters";
 import { incrementFacet, decrementFacet } from "./facetCounts";
+import { addFacetPostings, removeFacetPostings } from "./facetPostings";
 import { addSortEntry, removeSortEntry } from "./sortIndex";
 import type { SortKey } from "./ranking";
 import { indexRelevantFields } from "./storedFields";
@@ -68,11 +69,15 @@ async function clearDoc(
     // value; this decrement stringifies the PROJECTED stored value. They net to
     // zero only because every projection mode preserves facet-field values
     // identically — keep facet fields in any explicit storedFields projection.
+    const facetPairs: { field: string; value: string }[] = [];
     for (const field of facetFields) {
       const raw = stored[field];
       if (raw === undefined || raw === null) continue;
-      await decrementFacet(ctx, collection, field, String(raw));
+      const value = String(raw);
+      await decrementFacet(ctx, collection, field, value);
+      facetPairs.push({ field, value });
     }
+    await removeFacetPostings(ctx, collection, existing.docKey, facetPairs);
     for (const spec of sortSpecs) {
       await removeSortEntry(ctx, collection, spec, stored, docId);
     }
@@ -141,11 +146,15 @@ async function upsertInternal(
     }
   }
 
+  const facetPairs: { field: string; value: string }[] = [];
   for (const field of col.facetFields ?? []) {
     const raw = doc[field];
     if (raw === undefined || raw === null) continue;
-    await incrementFacet(ctx, collection, field, String(raw));
+    const value = String(raw);
+    await incrementFacet(ctx, collection, field, value);
+    facetPairs.push({ field, value });
   }
+  await addFacetPostings(ctx, collection, docKey, facetPairs);
 
   for (const spec of col.sortSpecs ?? []) {
     await addSortEntry(ctx, collection, spec, doc, id);
