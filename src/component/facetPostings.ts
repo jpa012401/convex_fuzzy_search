@@ -56,7 +56,7 @@ export async function addFacetPostings(
       await ctx.db.insert("facetPostings", { collection, field, value, bucket: 0, docKeys: [docKey] });
       continue;
     }
-    if (tail.docKeys.includes(docKey)) continue; // already present somewhere is checked per-bucket; see remove note
+    if (tail.docKeys.includes(docKey)) continue; // correctness relies on the caller fully removing a docKey (clearDoc -> removeFacetPostings) before re-adding, so a docKey is never present in a non-tail bucket at add time; this check only guards a same-tail duplicate
     if (tail.docKeys.length < FACET_CHUNK_SIZE) {
       await ctx.db.patch(tail._id, { docKeys: insertSorted(tail.docKeys, docKey) });
     } else {

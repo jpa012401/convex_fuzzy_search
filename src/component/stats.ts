@@ -6,6 +6,8 @@ import { FACET_VALUE_READ_BUDGET } from "./facetCounts";
 import { canonicalSpecId, sortSpecCount } from "./sortIndex";
 import { statsResultValidator } from "./schema";
 
+const FACET_POSTINGS_READ_BUDGET = 500;
+
 // Index-health snapshot for a collection. Reads the live counts maintained in
 // the aggregate/counter components so a consumer can validate that every index
 // is fully populated: for a healthy, fully-backfilled collection every
@@ -49,6 +51,25 @@ export const stats = query({
       });
     }
 
-    return { out_of, facets, sortSpecs };
+    // FacetPostings health — for each declared facet field, count the total
+    // docKeys across all its facetPostings buckets and report distinct values.
+    const facetPostings: { field: string; totalDocKeys: number; distinctValues: number }[] = [];
+    for (const field of col.facetFields ?? []) {
+      const rows = await ctx.db
+        .query("facetPostings")
+        .withIndex("by_collection_field_value", (q) =>
+          q.eq("collection", args.collection).eq("field", field),
+        )
+        .take(FACET_POSTINGS_READ_BUDGET);
+      let totalDocKeys = 0;
+      const distinctValueSet = new Set<string>();
+      for (const row of rows) {
+        totalDocKeys += row.docKeys.length;
+        distinctValueSet.add(row.value);
+      }
+      facetPostings.push({ field, totalDocKeys, distinctValues: distinctValueSet.size });
+    }
+
+    return { out_of, facets, sortSpecs, facetPostings };
   },
 });

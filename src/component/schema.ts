@@ -108,6 +108,13 @@ export const statsResultValidator = v.object({
     }),
   ),
   sortSpecs: v.array(v.object({ specId: v.string(), count: v.number() })),
+  facetPostings: v.array(
+    v.object({
+      field: v.string(),
+      totalDocKeys: v.number(),
+      distinctValues: v.number(),
+    }),
+  ),
 });
 
 export default defineSchema({

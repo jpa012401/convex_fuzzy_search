@@ -211,7 +211,7 @@ export const search = query({
       matchedIds = [...filterIds];
       // Facets via the inverted index need no docs; only custom ordering (or a
       // facet request that can't use the index) needs the full matched set.
-      const facetsNeedDocs = hasFacets && !(filterDocKeys && filterComplete);
+      const facetsNeedDocs = hasFacets && !(tokens.length === 0 && filterDocKeys && filterComplete);
       if (!facetsNeedDocs && !hasCustomOrder) {
         const pageStart = (page - 1) * perPage;
         byId = await loadDocs(ctx, args.collection, matchedIds.slice(pageStart, pageStart + perPage));
@@ -297,7 +297,7 @@ export const search = query({
           facet_counts.push({ field_name: field, counts: await readFacetCounts(ctx, args.collection, field, maxValues) });
           continue;
         }
-        if (filterDocKeys && filterComplete) {
+        if (tokens.length === 0 && filterDocKeys && filterComplete) {
           const values = await facetValuesForField(ctx, args.collection, field);
           const counts: { value: string; count: number }[] = [];
           for (const value of values) {

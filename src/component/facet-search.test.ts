@@ -96,4 +96,34 @@ describe("browse + facets served from counters", () => {
     expect(counts).toEqual({ Eng: 2, Sales: 2 });
     expect(r.found).toBe(4);
   });
+
+  it("text+filter+facet counts over the text-narrowed set, not the whole filter", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "tff",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "brand", type: "string" as const }, { field: "category", type: "string" as const }],
+      facetFields: ["category"],
+    });
+    // brand=Acme has 3 docs across 2 categories, but only 2 contain "shoe".
+    const docs = [
+      { id: "1", doc: { name: "red shoe", brand: "Acme", category: "Footwear" } },
+      { id: "2", doc: { name: "blue shoe", brand: "Acme", category: "Footwear" } },
+      { id: "3", doc: { name: "wool hat", brand: "Acme", category: "Hats" } },
+    ];
+    await t.mutation(api.write.upsertMany, { collection: "tff", docs });
+    const r = await t.query(api.search.search, {
+      collection: "tff", q: "shoe", filterBy: "brand:Acme", facetBy: ["category"],
+    });
+    const counts = Object.fromEntries(
+      (r.facet_counts.find((f: any) => f.field_name === "category")?.counts ?? []).map((c: any) => [c.value, c.count]),
+    );
+    // Only the 2 "shoe" docs match -> Footwear:2, and Hats must NOT appear
+    // (doc 3 is brand:Acme but has no "shoe"). If the index path ignored text,
+    // Hats:1 would wrongly appear.
+    expect(counts).toEqual({ Footwear: 2 });
+    expect(r.found).toBe(2);
+  });
 });
