@@ -92,4 +92,31 @@ describe("write path maintains facet counts", () => {
     );
     expect(gone.length).toBe(0); // emptied bucket deleted
   });
+
+  it("moves a docKey between facet values on a value-change upsert (REPLACE)", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "rp",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "brand", type: "string" as const }],
+      facetFields: ["brand"],
+    });
+    await t.mutation(api.write.upsert, { collection: "rp", id: "a", doc: { name: "x", brand: "Acme" } });
+    // change brand Acme -> Beta via re-upsert of the same id
+    await t.mutation(api.write.upsert, { collection: "rp", id: "a", doc: { name: "x", brand: "Beta" } });
+    const counts = await t.run(async (ctx) => {
+      const dk = async (value: string) => {
+        const rows = await ctx.db
+          .query("facetPostings")
+          .withIndex("by_collection_field_value", (q) => q.eq("collection", "rp").eq("field", "brand").eq("value", value))
+          .collect();
+        return rows.flatMap((r) => r.docKeys).length;
+      };
+      return { acme: await dk("Acme"), beta: await dk("Beta") };
+    });
+    expect(counts.acme).toBe(0); // old value fully dropped (emptied bucket deleted)
+    expect(counts.beta).toBe(1); // new value has the docKey
+  });
 });
