@@ -212,4 +212,14 @@ export default defineSchema({
   })
     .index("by_field", ["collection", "field"]) // enumerate all values for a field
     .index("by_value", ["collection", "field", "value"]), // locate the row to ++/--
+
+  facetPostings: defineTable({
+    collection: v.string(),
+    field: v.string(),
+    value: v.string(),
+    bucket: v.number(),
+    docKeys: v.array(v.number()),
+  })
+    .index("by_collection_field_value", ["collection", "field", "value"])
+    .index("by_collection_field_value_bucket", ["collection", "field", "value", "bucket"]),
 });
