@@ -192,12 +192,21 @@ export function parseFilter(input: string, fieldTypes: Record<string, FieldType>
   return astToPredicate(parseFilterAst(input, fieldTypes));
 }
 
-type ResolveResult = { ids: Set<string>; truncated: boolean };
+type ResolveResult = { ids: Set<string>; docKeys: Set<number>; truncated: boolean; complete: boolean };
 
-function rowsToResult(rows: { docId: string }[], budget: number): ResolveResult {
+function rowsToResult(rows: { docId: string; docKey?: number }[], budget: number): ResolveResult {
+  const kept = rows.slice(0, budget);
+  const docKeys = new Set<number>();
+  let complete = true;
+  for (const r of kept) {
+    if (r.docKey === undefined) { complete = false; continue; }
+    docKeys.add(r.docKey);
+  }
   return {
-    ids: new Set(rows.slice(0, budget).map((r) => r.docId)),
+    ids: new Set(kept.map((r) => r.docId)),
+    docKeys,
     truncated: rows.length > budget,
+    complete,
   };
 }
 
@@ -250,16 +259,20 @@ export async function resolveAstToDocIds(
       const [small, big] = a.ids.size <= b.ids.size ? [a.ids, b.ids] : [b.ids, a.ids];
       const out = new Set<string>();
       for (const id of small) if (big.has(id)) out.add(id);
-      return { ids: out, truncated: a.truncated || b.truncated };
+      const [smallK, bigK] = a.docKeys.size <= b.docKeys.size ? [a.docKeys, b.docKeys] : [b.docKeys, a.docKeys];
+      const outK = new Set<number>();
+      for (const k of smallK) if (bigK.has(k)) outK.add(k);
+      return { ids: out, docKeys: outK, truncated: a.truncated || b.truncated, complete: a.complete && b.complete };
     }
     case "or": {
       const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
       const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
       for (const id of b.ids) {
-        if (a.ids.size >= budget) return { ids: a.ids, truncated: true };
+        if (a.ids.size >= budget) return { ids: a.ids, docKeys: a.docKeys, truncated: true, complete: a.complete && b.complete };
         a.ids.add(id);
       }
-      return { ids: a.ids, truncated: a.truncated || b.truncated };
+      for (const k of b.docKeys) a.docKeys.add(k);
+      return { ids: a.ids, docKeys: a.docKeys, truncated: a.truncated || b.truncated, complete: a.complete && b.complete };
     }
     case "exact":
       return ast.type === "number"
@@ -267,18 +280,22 @@ export async function resolveAstToDocIds(
         : await strIds(ctx, collection, ast.field, ast.value, budget);
     case "inSet": {
       const out = new Set<string>();
+      const outK = new Set<number>();
       let truncated = false;
+      let complete = true;
       for (const v of ast.values) {
         const result = ast.type === "number"
           ? await numEqIds(ctx, collection, ast.field, Number(v), budget)
           : await strIds(ctx, collection, ast.field, v, budget);
         truncated ||= result.truncated;
+        complete &&= result.complete;
         for (const id of result.ids) {
-          if (out.size >= budget) return { ids: out, truncated: true };
+          if (out.size >= budget) return { ids: out, docKeys: outK, truncated: true, complete };
           out.add(id);
         }
+        for (const k of result.docKeys) outK.add(k);
       }
-      return { ids: out, truncated };
+      return { ids: out, docKeys: outK, truncated, complete };
     }
     case "cmp":
       return await numCmpIds(ctx, collection, ast.field, ast.op, ast.num, budget);

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { convexTest } from "convex-test";
 import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "./schema";
+import { api } from "./_generated/api";
 import { parseFilterAst, resolveAstToDocIds } from "./filter";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -74,5 +75,26 @@ describe("resolveAstToDocIds", () => {
     });
     expect(result.size).toBeLessThanOrEqual(3);
     expect(result.truncated).toBe(true);
+  });
+
+  it("resolves a filter to docKeys and reports complete", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "fr",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "brand", type: "string" as const }],
+    });
+    await t.mutation(api.write.upsert, { collection: "fr", id: "a", doc: { name: "x", brand: "Acme" } });
+    await t.mutation(api.write.upsert, { collection: "fr", id: "b", doc: { name: "y", brand: "Acme" } });
+    const res = await t.run(async (ctx) => {
+      const { resolveAstToDocIds, parseFilterAst } = await import("./filter");
+      const r = await resolveAstToDocIds(ctx, "fr", parseFilterAst("brand:Acme", { brand: "string" }));
+      return { docKeysSize: r.docKeys.size, complete: r.complete, idsSize: r.ids.size };
+    });
+    expect(res.docKeysSize).toBe(2);
+    expect(res.complete).toBe(true);
+    expect(res.idsSize).toBe(2);
   });
 });

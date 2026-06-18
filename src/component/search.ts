@@ -158,6 +158,8 @@ export const search = query({
 
     // ---- Resolve filter to a docId set via the index (S2), if present.
     let filterIds: Set<string> | null = null;
+    let filterDocKeys: Set<number> | null = null;
+    let filterComplete = false;
     let filterTruncated = false;
     if (hasFilter) {
       const fieldTypes: Record<string, "string" | "number"> = {};
@@ -168,6 +170,8 @@ export const search = query({
         parseFilterAst(args.filterBy as string, fieldTypes),
       );
       filterIds = resolved.ids;
+      filterDocKeys = resolved.docKeys;
+      filterComplete = resolved.complete;
       filterTruncated = resolved.truncated;
     }
 
