@@ -51,6 +51,8 @@ describe("collections", () => {
     await t.mutation(api.collections.createCollection, {
       name: "products",
       searchFields: ["name"],
+      facetFields: ["name"],
+      filterFields: [{ field: "name", type: "string" as const }],
     });
     await t.mutation(api.write.upsert, {
       collection: "products",
@@ -83,12 +85,17 @@ describe("collections", () => {
         .query("trigrams")
         .withIndex("by_collection_term", (q) => q.eq("collection", "products"))
         .collect(),
+      facetPostings: await ctx.db
+        .query("facetPostings")
+        .withIndex("by_collection_field_value", (q) => q.eq("collection", "products"))
+        .collect(),
     }));
     expect(leftover.docs).toEqual([]);
     expect(leftover.docTerms).toEqual([]);
     expect(leftover.postingChunks).toEqual([]);
     expect(leftover.terms).toEqual([]);
     expect(leftover.trigrams).toEqual([]);
+    expect(leftover.facetPostings).toEqual([]);
   });
 
   it("continues large collection cleanup in bounded internal batches before allowing recreate", async () => {

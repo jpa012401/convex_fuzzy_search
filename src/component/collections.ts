@@ -34,7 +34,7 @@ export async function requireCollection(ctx: QueryCtx, name: string) {
 }
 
 async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<boolean> {
-  const [doc, docTerm, postingChunk, docKeyCounter, term, trigram, filter, facet] = await Promise.all([
+  const [doc, docTerm, postingChunk, docKeyCounter, term, trigram, filter, facet, facetPosting] = await Promise.all([
     ctx.db
       .query("documents")
       .withIndex("by_collection_doc", (q) => q.eq("collection", name))
@@ -67,8 +67,12 @@ async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<bool
       .query("facetCounts")
       .withIndex("by_field", (q) => q.eq("collection", name))
       .first(),
+    ctx.db
+      .query("facetPostings")
+      .withIndex("by_collection_field_value", (q) => q.eq("collection", name))
+      .first(),
   ]);
-  return !!(doc || docTerm || postingChunk || docKeyCounter || term || trigram || filter || facet);
+  return !!(doc || docTerm || postingChunk || docKeyCounter || term || trigram || filter || facet || facetPosting);
 }
 
 export async function blockIfDeletionInProgress(ctx: QueryCtx, name: string): Promise<void> {
@@ -151,6 +155,15 @@ async function deleteCollectionRowsBatch(
     .take(batchSize);
   if (facets.length > 0) {
     for (const r of facets) await ctx.db.delete(r._id);
+    return false;
+  }
+
+  const facetPostings = await ctx.db
+    .query("facetPostings")
+    .withIndex("by_collection_field_value", (q) => q.eq("collection", name))
+    .take(batchSize);
+  if (facetPostings.length > 0) {
+    for (const r of facetPostings) await ctx.db.delete(r._id);
     return false;
   }
 
