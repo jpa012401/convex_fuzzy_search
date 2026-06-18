@@ -62,28 +62,65 @@ get `docKey` via the backfill (§5). Until backfilled, a `filters` row lacking
 `docKey` marks the index incomplete → the read path falls back (§5).
 
 ### 1. Schema — new table `facetPostings`
-Mirrors `postingChunks`:
+Mirrors `postingChunks` structurally, but uses **fill-based bucketing** (pack the
+tail bucket to capacity before opening a new one) rather than
+`postingChunks`'s fixed `floor(docKey/64)` ranges:
 
     facetPostings: {
       collection: string,
       field: string,
       value: string,
-      bucket: number,            // floor(docKey / 64)
-      docKeys: number[],         // sorted, deduped, within this bucket
+      bucket: number,            // monotonic append-order index, NOT docKey/64
+      docKeys: number[],         // sorted, deduped; up to FACET_CHUNK_SIZE (64)
     }
       .index("by_collection_field_value", ["collection", "field", "value"])
       .index("by_collection_field_value_bucket",
              ["collection", "field", "value", "bucket"])
 
+**Fill-based bucketing (the requested behavior).** A new docKey is appended to
+the **current tail** bucket for its `(field, value)` — the highest existing
+`bucket`, found via `by_collection_field_value_bucket` ordered desc, `.first()`.
+- If no bucket exists, create bucket `0` with the single docKey.
+- If the tail bucket has `< FACET_CHUNK_SIZE` docKeys, insert the docKey into its
+  sorted `docKeys` (dedup) and patch.
+- If the tail bucket is full (`=== FACET_CHUNK_SIZE`), create bucket `tail + 1`.
+
+This guarantees every bucket except the tail is full, so a value with K docs uses
+`ceil(K / 64)` chunks — the dense packing this design wants (vs. the sparse
+`~3.5 chunks/doc` the `postingChunks` TODO records for the fixed scheme).
+
+**Tradeoff — write contention (documented, accepted).** Fill-based packing means
+concurrent writes to the same `(field, value)` contend on the one tail chunk row
+(OCC conflict), unlike fixed bucketing where different docKeys land in different
+chunks. This is acceptable here because the dominant write path is **sequential**
+(`seedChain` self-chains one batch-transaction at a time; `upsertMany` writes
+within a single transaction), so same-tail concurrency is rare. Independent
+app-driven `upsert` races are handled by Convex's automatic OCC retry. Removals
+delete the docKey from whichever bucket holds it (located via the value's chunks);
+a bucket that empties is deleted. Removals do **not** compact/rebalance non-tail
+buckets — they may fall below full over a doc's lifetime; density is a write-time
+invariant, not a maintained one. Intersection/counting is unaffected by bucket
+fill level (it reads all of a value's chunks regardless).
+
 ### 2. Write path — `facetPostings.ts` (new module)
-Mirror `postingChunks.ts`'s add/remove/chunk discipline:
+Mirror `postingChunks.ts`'s module shape, but with **fill-based** add:
 - `addFacetPostings(ctx, collection, docKey, facets: {field, value}[])` — for
-  each `(field, value)`, load the bucket chunk for `docKey`, insert/patch with
-  the docKey added to the sorted `docKeys` array (dedup on docKey).
-- `removeFacetPostings(ctx, collection, docKey, facets)` — remove the docKey
-  from each `(field, value)` bucket; delete the chunk row when it empties.
-- `readFacetPostingDocKeys(ctx, collection, field, value)` — async-generator /
-  collector over a value's chunks yielding sorted docKeys (for intersection).
+  each `(field, value)`, find the tail bucket (highest `bucket`,
+  `by_collection_field_value_bucket` desc `.first()`); append to it if it has
+  `< FACET_CHUNK_SIZE` docKeys (sorted, dedup), else open `tail + 1`; create
+  bucket `0` if none exists. (Per §1.)
+- `removeFacetPostings(ctx, collection, docKey, facets)` — for each
+  `(field, value)`, locate the bucket containing `docKey` (scan the value's
+  chunks), remove it; delete the chunk row when it empties. No rebalancing.
+- `FACET_CHUNK_SIZE = 64` constant (own constant; do not couple to
+  `POSTING_CHUNK_SIZE`).
+- `readFacetPostingDocKeys(ctx, collection, field, value)` — collector over a
+  value's chunks returning its docKeys. NOTE: with fill-based bucketing, docKeys
+  are sorted *within* a bucket but **not** guaranteed sorted *across* buckets
+  (a bucket holds whatever docKeys arrived while it was the tail). The
+  intersection therefore treats the result as a **set membership test**
+  (smaller-side iterated against the other as a `Set`), not an order-dependent
+  sorted merge — so cross-bucket order is irrelevant to correctness.
 - `facetValuesForField(ctx, collection, field)` — the distinct values of a
   facet field. Reuse the existing `facetCounts` `by_field` index (already
   maintained, already bounded by `FACET_VALUE_READ_BUDGET`) to enumerate values
@@ -136,8 +173,11 @@ Add `facetPostings` to: `hasCollectionIndexRows`, `deleteCollectionRowsBatch`
 
 ## Testing
 
-- **Unit (`facetPostings.test.ts`):** add/remove/dedup/bucket behavior; chunk
-  creation and emptying; sorted invariant.
+- **Unit (`facetPostings.test.ts`):** add/remove/dedup/sorted invariant; and the
+  **fill-based bucketing** specifically — adding > FACET_CHUNK_SIZE docKeys to one
+  `(field, value)` produces `ceil(K/64)` buckets with all-but-tail full; the tail
+  fills before a new bucket opens; removal empties and deletes a bucket; a value
+  with K docs never creates a sparse non-tail bucket on a sequential add sequence.
 - **Intersection correctness:** a filtered facet count equals the brute-force
   count over the same docs, across AST filter shapes (equality, range, AND/OR).
 - **Parity:** for a small collection, the new filtered-facet path returns
