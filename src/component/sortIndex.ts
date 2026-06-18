@@ -77,7 +77,8 @@ export async function removeSortEntry(
   });
 }
 
-// docIds for a page [offset, offset+limit) in the spec's order.
+// docIds for a page [offset, offset+limit) in the spec's order. Reads the page
+// in ONE batched atBatch call instead of `limit` sequential at() lookups.
 export async function pageSortedDocIds(
   ctx: QueryCtx,
   collection: string,
@@ -87,12 +88,14 @@ export async function pageSortedDocIds(
 ): Promise<string[]> {
   const namespace = ns(collection, specId);
   const total = await sortAgg.count(ctx, { namespace });
-  const ids: string[] = [];
-  for (let i = 0; i < limit && offset + i < total; i++) {
-    const item = await sortAgg.at(ctx, offset + i, { namespace });
-    ids.push(item.id);
-  }
-  return ids;
+  const offsets: number[] = [];
+  for (let i = 0; i < limit && offset + i < total; i++) offsets.push(offset + i);
+  if (offsets.length === 0) return [];
+  const items = await sortAgg.atBatch(
+    ctx,
+    offsets.map((o) => ({ offset: o, namespace })),
+  );
+  return items.map((it) => it.id);
 }
 
 // First `limit` docIds of a spec namespace in base order, read as a SINGLE
