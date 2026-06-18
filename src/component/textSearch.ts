@@ -92,13 +92,25 @@ export async function matchTokens(
   // 4. Verify the other tokens per driver doc. Read each doc's terms ONCE,
   //    then check every non-driver token against that single term set.
   const others = perToken.filter((_, i) => i !== driverIdx);
-  const scoreById = new Map<string, number>();
-  for (const [docKey, dScore] of driverScore) {
+  const driverDocs = [...driverScore]; // [docKey, dScore] in driverScore order
+
+  // Phase A — gather + verify. For multi-token queries, read each driver doc's
+  // terms ONCE (in parallel), then verify the non-driver tokens purely in
+  // memory. Single-token queries (others.length === 0) skip the read entirely:
+  // every driver doc passes with total = dScore, exactly as before.
+  const termsByIndex =
+    others.length > 0
+      ? await Promise.all(driverDocs.map(([docKey]) => loadDocTerms(ctx, collection, docKey)))
+      : [];
+
+  // Passing docs, in driverScore order, with their blended score.
+  const passing: { docKey: number; total: number }[] = [];
+  for (let i = 0; i < driverDocs.length; i++) {
+    const [docKey, dScore] = driverDocs[i];
     let present: Map<string, number> | null = null;
     if (others.length > 0) {
-      const postings = await loadDocTerms(ctx, collection, docKey);
       present = new Map<string, number>();
-      for (const p of postings) {
+      for (const p of termsByIndex[i]) {
         if (queryBy && !queryBy.includes(p.field)) continue;
         present.set(p.term, p.tf);
       }
@@ -110,10 +122,19 @@ export async function matchTokens(
       if (s === undefined) { ok = false; break; }
       total += s;
     }
-    if (ok) {
-      const doc = await loadDocumentByDocKey(ctx, collection, docKey);
-      if (doc) scoreById.set(doc.docId, total);
-    }
+    if (ok) passing.push({ docKey, total });
+  }
+
+  // Phase B — resolve docIds for the passing docs ONLY (same read set as the
+  // old early-exit), in parallel. Build scoreById in passing (driverScore)
+  // order so insertion order is unchanged.
+  const docs = await Promise.all(
+    passing.map((p) => loadDocumentByDocKey(ctx, collection, p.docKey)),
+  );
+  const scoreById = new Map<string, number>();
+  for (let i = 0; i < passing.length; i++) {
+    const doc = docs[i];
+    if (doc) scoreById.set(doc.docId, passing[i].total);
   }
 
   return { scoreById, matchedTerms, truncated, singleExactTerm };
