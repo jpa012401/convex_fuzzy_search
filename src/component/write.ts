@@ -41,13 +41,16 @@ async function clearDoc(
   docId: string,
   facetFields: string[],
   sortSpecs: SortKey[][],
+  filterFields: { field: string; type: "string" | "number" }[],
 ): Promise<{ oldTerms: Set<string>; existed: boolean }> {
+  // At most one filters row per declared filterField for this doc, so the read
+  // is bounded by config, not by collection size.
   const filt = await ctx.db
     .query("filters")
     .withIndex("by_doc", (q) =>
       q.eq("collection", collection).eq("docId", docId),
     )
-    .collect();
+    .take(filterFields.length);
   for (const r of filt) await ctx.db.delete(r._id);
 
   const existing = await loadDocumentByDocId(ctx, collection, docId);
@@ -81,7 +84,7 @@ async function upsertInternal(
 ) {
   const col = await requireCollection(ctx, collection);
   const docKey = await ensureDocKey(ctx, collection, id);
-  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? [], col.sortSpecs ?? []);
+  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? [], col.sortSpecs ?? [], col.filterFields ?? []);
 
   const newTerms = new Set<string>();
   const termEntries: DocTerm[] = [];
@@ -158,7 +161,7 @@ export const deleteDoc = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const col = await requireCollection(ctx, args.collection);
-    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? [], col.sortSpecs ?? []);
+    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? [], col.sortSpecs ?? [], col.filterFields ?? []);
     await applyTermDiff(ctx, args.collection, oldTerms, new Set());
     if (existed) await removeDoc(ctx, args.collection, args.id);
     return null;
