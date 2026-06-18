@@ -53,4 +53,31 @@ describe("config sync + app-driven reindex (component level)", () => {
     const cleared = await t.query(api.collections.getCollection, { name: "c" });
     expect(cleared?.pendingFields ?? []).toEqual([]);
   });
+
+  it("replaying a doc populates filters.docKey and facetPostings", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "bf",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "brand", type: "string" as const }],
+      facetFields: ["brand"],
+    });
+    await t.mutation(api.write.upsert, { collection: "bf", id: "a", doc: { name: "x", brand: "Acme" } });
+    // Simulate a pre-migration filters row: strip its docKey.
+    await t.run(async (ctx) => {
+      const row = await ctx.db.query("filters").withIndex("by_doc", (q) => q.eq("collection", "bf").eq("docId", "a")).unique();
+      if (row) await ctx.db.patch(row._id, { docKey: undefined });
+    });
+    // Replay (what reindex does): upsert the same doc again.
+    await t.mutation(api.write.upsert, { collection: "bf", id: "a", doc: { name: "x", brand: "Acme" } });
+    const { hasDocKey, postings } = await t.run(async (ctx) => {
+      const row = await ctx.db.query("filters").withIndex("by_doc", (q) => q.eq("collection", "bf").eq("docId", "a")).unique();
+      const post = await ctx.db.query("facetPostings").withIndex("by_collection_field_value", (q) => q.eq("collection", "bf").eq("field", "brand").eq("value", "Acme")).collect();
+      return { hasDocKey: typeof row?.docKey === "number", postings: post.flatMap((r) => r.docKeys).length };
+    });
+    expect(hasDocKey).toBe(true);
+    expect(postings).toBe(1);
+  });
 });

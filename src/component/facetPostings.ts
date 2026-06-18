@@ -1,5 +1,18 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
+/**
+ * Backfill contract for existing collections:
+ * Collections created before facetPostings was introduced are migrated by replaying their docs
+ * through the `upsert` path (via the app's `reindex` function, e.g., example/convex/products.ts).
+ * A replayed upsert clears and rebuilds both `filters` rows (populating `filters.docKey`) and
+ * `facetPostings` entries.
+ *
+ * Until a collection is fully replayed, incomplete rows (lacking `docKey`) may exist; when such
+ * rows are encountered, filter resolution reports `complete: false` and the read path falls back
+ * to load-and-tally (see task 6 Step 2 guard `filterComplete`). This guarantees no wrong counts
+ * while a migration is in progress.
+ */
+
 // Fill-based inverted facet index: (field, value) -> sorted docKeys, packed into
 // buckets of FACET_CHUNK_SIZE. A docKey appends to the current tail bucket
 // (highest `bucket`); a new bucket opens only when the tail is full. Removal
