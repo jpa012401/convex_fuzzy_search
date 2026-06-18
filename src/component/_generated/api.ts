@@ -14,6 +14,7 @@ import type * as counters from "../counters.js";
 import type * as diffCollection from "../diffCollection.js";
 import type * as docKeys from "../docKeys.js";
 import type * as facetCounts from "../facetCounts.js";
+import type * as facetPostings from "../facetPostings.js";
 import type * as filter from "../filter.js";
 import type * as fuzzy from "../fuzzy.js";
 import type * as highlight from "../highlight.js";
@@ -46,6 +47,7 @@ const fullApi: ApiFromModules<{
   diffCollection: typeof diffCollection;
   docKeys: typeof docKeys;
   facetCounts: typeof facetCounts;
+  facetPostings: typeof facetPostings;
   filter: typeof filter;
   fuzzy: typeof fuzzy;
   highlight: typeof highlight;
