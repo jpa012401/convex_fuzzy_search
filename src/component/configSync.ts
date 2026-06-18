@@ -1,6 +1,6 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { loadCollection, validateCollectionConfig, requireCollection } from "./collections";
+import { blockIfDeletionInProgress, loadCollection, validateCollectionConfig, requireCollection } from "./collections";
 import { diffCollection } from "./diffCollection";
 import { collectionConfigValidator } from "./schema";
 
@@ -34,6 +34,10 @@ export const applyCollectionConfig = mutation({
     };
     const diff = diffCollection(stored ? { ...stored } : null, { ...next });
     if (stored === null) {
+      // Mirror createCollection: refuse to re-create a row while a same-named
+      // collection is still being torn down, else the live row would coexist
+      // with index rows the background cleanup will delete out from under it.
+      await blockIfDeletionInProgress(ctx, config.name);
       await ctx.db.insert("collections", { ...next, pendingFields: [] });
       return { kind: "create" as const, pendingFields: [] as string[] };
     }

@@ -71,7 +71,7 @@ async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<bool
   return !!(doc || docTerm || postingChunk || docKeyCounter || term || trigram || filter || facet);
 }
 
-async function blockIfDeletionInProgress(ctx: QueryCtx, name: string): Promise<void> {
+export async function blockIfDeletionInProgress(ctx: QueryCtx, name: string): Promise<void> {
   if ((await loadDeletion(ctx, name)) || (await hasCollectionIndexRows(ctx, name))) {
     throw new Error(`Collection "${name}" deletion in progress`);
   }
