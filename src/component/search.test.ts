@@ -42,6 +42,49 @@ describe("search", () => {
     expect(r.hits[0].id).toBe("p1"); // "Red Running Shoe"
   });
 
+  it("text search over many matches returns one page without loading the whole matched set", async () => {
+    // Regression: the text path used to loadDocs() over EVERY matched id, which
+    // could exceed the per-query read limit on large matched sets. With no facet
+    // and no custom order it must load only the page's docs. We assert correct
+    // paging + highlighting over a match set far larger than perPage.
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "big",
+      searchFields: ["name"],
+    });
+    // 120 docs all containing "widget"; ids zero-padded so string order is stable.
+    const docs = Array.from({ length: 120 }, (_, i) => ({
+      id: `d${String(i).padStart(3, "0")}`,
+      doc: { name: `widget ${i}` },
+    }));
+    for (let i = 0; i < docs.length; i += 50) {
+      await t.mutation(api.write.upsertMany, { collection: "big", docs: docs.slice(i, i + 50) });
+    }
+    const r = await t.query(api.search.search, {
+      collection: "big",
+      q: "widget",
+      perPage: 10,
+      page: 1,
+    });
+    expect(r.found).toBe(120);          // full match count, not the page size
+    expect(r.hits.length).toBe(10);     // one page
+    // every hit highlights the matched term (page docs were loaded)
+    for (const h of r.hits) {
+      expect(h.highlight.name?.snippet).toContain("<mark>widget</mark>");
+    }
+    // page 2 returns a disjoint set of 10
+    const r2 = await t.query(api.search.search, {
+      collection: "big",
+      q: "widget",
+      perPage: 10,
+      page: 2,
+    });
+    expect(r2.hits.length).toBe(10);
+    const overlap = new Set(r.hits.map((h: any) => h.id));
+    expect(r2.hits.some((h: any) => overlap.has(h.id))).toBe(false);
+  });
+
   it("queryBy restricts matching fields", async () => {
     const t = await setup();
     const r = await t.query(api.search.search, {

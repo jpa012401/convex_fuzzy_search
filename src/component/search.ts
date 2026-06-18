@@ -180,9 +180,10 @@ export const search = query({
     let windowTruncated = false;
     let singleExactTerm: string | null = null;
     let reranked = true;
+    let deferredPageLoad = false;
 
     if (tokens.length > 0) {
-      // TEXT PATH: driver-token intersection (bounded). Intersect with filter; load only matched docs.
+      // TEXT PATH: driver-token intersection (bounded). Intersect with filter.
       const m = await matchTokens(ctx, args.collection, tokens, args.queryBy);
       scoreById = m.scoreById;
       for (const term of m.matchedTerms) matchedTerms.add(term);
@@ -190,7 +191,17 @@ export const search = query({
       singleExactTerm = m.singleExactTerm;
       matchedIds = [...scoreById.keys()];
       if (filterIds) matchedIds = matchedIds.filter((id) => filterIds!.has(id));
-      byId = await loadDocs(ctx, args.collection, matchedIds);
+      // Only facet tallying and stored-field ordering (rankBy/sortBy/rank) need
+      // the WHOLE matched set's stored docs. Plain relevance-ordered text search
+      // needs stored docs for the page only (highlighting), and orders by the
+      // relevance score alone — so defer to a bounded page-load below and avoid
+      // loading every matched doc (which can exceed the per-query read limit).
+      if (hasFacets || hasCustomOrder) {
+        byId = await loadDocs(ctx, args.collection, matchedIds);
+      } else {
+        byId = new Map<string, unknown>();
+        deferredPageLoad = true;
+      }
     } else if (filterIds) {
       // BROWSE + FILTER: the filter set is the result set (no full-collection load).
       matchedIds = [...filterIds];
@@ -316,6 +327,12 @@ export const search = query({
       }
     } else {
       pageIds = matchedIds.slice(pageStart, pageStart + perPage);
+    }
+    // Deferred page-load: the text path with no facets/custom order skipped the
+    // full matched-set load above; fetch just this page's stored docs now (for
+    // highlighting). byId is otherwise already populated.
+    if (deferredPageLoad && pageIds.length > 0) {
+      byId = await loadDocs(ctx, args.collection, pageIds);
     }
     const fields = args.queryBy ?? collection.searchFields;
     const hits: Hit[] = pageIds.map((id) => {
