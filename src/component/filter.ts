@@ -236,6 +236,7 @@ async function numCmpIds(ctx: QueryCtx, collection: string, field: string, op: s
         : b.lte("numVal", num);
     })
     .take(budget + 1);
+  // Rows lacking numVal are dropped here; a row missing both numVal and docKey indicates a write bug, not a backfill state, so complete=false is not warranted.
   return rowsToResult(rows.filter((r) => r.numVal !== undefined), budget);
 }
 async function numRangeIds(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number, budget: number): Promise<ResolveResult> {
@@ -243,6 +244,7 @@ async function numRangeIds(ctx: QueryCtx, collection: string, field: string, lo:
     .query("filters")
     .withIndex("by_num", (q) => q.eq("collection", collection).eq("field", field).gte("numVal", lo).lte("numVal", hi))
     .take(budget + 1);
+  // Rows lacking numVal are dropped here; a row missing both numVal and docKey indicates a write bug, not a backfill state, so complete=false is not warranted.
   return rowsToResult(rows.filter((r) => r.numVal !== undefined), budget);
 }
 
@@ -267,11 +269,12 @@ export async function resolveAstToDocIds(
     case "or": {
       const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
       const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
+      // Merge b.docKeys first so they're always present even if ids budget triggers early-return below.
+      for (const k of b.docKeys) a.docKeys.add(k);
       for (const id of b.ids) {
         if (a.ids.size >= budget) return { ids: a.ids, docKeys: a.docKeys, truncated: true, complete: a.complete && b.complete };
         a.ids.add(id);
       }
-      for (const k of b.docKeys) a.docKeys.add(k);
       return { ids: a.ids, docKeys: a.docKeys, truncated: a.truncated || b.truncated, complete: a.complete && b.complete };
     }
     case "exact":
@@ -289,11 +292,12 @@ export async function resolveAstToDocIds(
           : await strIds(ctx, collection, ast.field, v, budget);
         truncated ||= result.truncated;
         complete &&= result.complete;
+        // Merge docKeys before the ids loop so an early-return at budget still includes this result's keys.
+        for (const k of result.docKeys) outK.add(k);
         for (const id of result.ids) {
           if (out.size >= budget) return { ids: out, docKeys: outK, truncated: true, complete };
           out.add(id);
         }
-        for (const k of result.docKeys) outK.add(k);
       }
       return { ids: out, docKeys: outK, truncated, complete };
     }
