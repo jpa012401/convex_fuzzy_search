@@ -62,4 +62,38 @@ describe("browse + facets served from counters", () => {
       { field_name: "brand", counts: [{ value: "Aurora", count: 2 }] },
     ]);
   });
+
+  it("filtered facet counts come from the inverted index and match a brute tally", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "fs",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [
+        { field: "inStock", type: "string" as const },
+        { field: "category", type: "string" as const },
+      ],
+      facetFields: ["category"],
+    });
+    // 6 docs: 4 in stock (2 Eng, 2 Sales), 2 out (1 Eng, 1 Sales).
+    const docs = [
+      { id: "1", doc: { name: "a", inStock: "true", category: "Eng" } },
+      { id: "2", doc: { name: "b", inStock: "true", category: "Eng" } },
+      { id: "3", doc: { name: "c", inStock: "true", category: "Sales" } },
+      { id: "4", doc: { name: "d", inStock: "true", category: "Sales" } },
+      { id: "5", doc: { name: "e", inStock: "false", category: "Eng" } },
+      { id: "6", doc: { name: "f", inStock: "false", category: "Sales" } },
+    ];
+    await t.mutation(api.write.upsertMany, { collection: "fs", docs });
+    const r = await t.query(api.search.search, {
+      collection: "fs", q: "", filterBy: "inStock:true", facetBy: ["category"],
+    });
+    const counts = Object.fromEntries(
+      (r.facet_counts.find((f: any) => f.field_name === "category")?.counts ?? []).map((c: any) => [c.value, c.count]),
+    );
+    // Among inStock=true only: Eng 2, Sales 2 (the out-of-stock docs excluded).
+    expect(counts).toEqual({ Eng: 2, Sales: 2 });
+    expect(r.found).toBe(4);
+  });
 });

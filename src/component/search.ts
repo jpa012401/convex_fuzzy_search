@@ -8,7 +8,8 @@ import { parseFilterAst, resolveAstToDocIds } from "./filter";
 import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
 import { collectionCount, pageDocIds } from "./counters";
-import { readFacetCounts } from "./facetCounts";
+import { readFacetCounts, facetValuesForField } from "./facetCounts";
+import { readFacetPostingDocKeys } from "./facetPostings";
 import { specMatches, canonicalSpecId, pageSortedDocIds, pageSortedDocIdsRange } from "./sortIndex";
 import { evalTerms } from "./score";
 import { searchResultValidator } from "./schema";
@@ -207,9 +208,11 @@ export const search = query({
         deferredPageLoad = true;
       }
     } else if (filterIds) {
-      // BROWSE + FILTER: the filter set is the result set (no full-collection load).
       matchedIds = [...filterIds];
-      if (!hasFacets && !hasCustomOrder) {
+      // Facets via the inverted index need no docs; only custom ordering (or a
+      // facet request that can't use the index) needs the full matched set.
+      const facetsNeedDocs = hasFacets && !(filterDocKeys && filterComplete);
+      if (!facetsNeedDocs && !hasCustomOrder) {
         const pageStart = (page - 1) * perPage;
         byId = await loadDocs(ctx, args.collection, matchedIds.slice(pageStart, pageStart + perPage));
       } else {
@@ -292,6 +295,21 @@ export const search = query({
         if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
         if (globalFacets) {
           facet_counts.push({ field_name: field, counts: await readFacetCounts(ctx, args.collection, field, maxValues) });
+          continue;
+        }
+        if (filterDocKeys && filterComplete) {
+          const values = await facetValuesForField(ctx, args.collection, field);
+          const counts: { value: string; count: number }[] = [];
+          for (const value of values) {
+            const postArr = await readFacetPostingDocKeys(ctx, args.collection, field, value);
+            const post = new Set<number>(postArr);
+            const [small, big] = post.size <= filterDocKeys.size ? [post, filterDocKeys] : [filterDocKeys, post];
+            let n = 0;
+            for (const k of small) if (big.has(k)) n++;
+            if (n > 0) counts.push({ value, count: n });
+          }
+          counts.sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
+          facet_counts.push({ field_name: field, counts: counts.slice(0, maxValues) });
           continue;
         }
         const tally = new Map<string, number>();
