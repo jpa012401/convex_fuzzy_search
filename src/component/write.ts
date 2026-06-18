@@ -62,6 +62,10 @@ async function clearDoc(
     await removePostingEntries(ctx, collection, existing.docKey, oldTermEntries);
     await deleteDocTerms(ctx, collection, existing.docKey);
     const stored = existing.stored as Record<string, unknown>;
+    // Facet invariant: incrementFacet (on upsert) stringifies the RAW input
+    // value; this decrement stringifies the PROJECTED stored value. They net to
+    // zero only because every projection mode preserves facet-field values
+    // identically — keep facet fields in any explicit storedFields projection.
     for (const field of facetFields) {
       const raw = stored[field];
       if (raw === undefined || raw === null) continue;

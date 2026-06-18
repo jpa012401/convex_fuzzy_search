@@ -1,6 +1,9 @@
 export type RankBy = { text?: number; fields?: { field: string; weight: number }[] };
 export type SortKey = { field: string; order: "asc" | "desc" };
 
+// Coerce a stored field to a number for sorting/ranking. A MISSING field or a
+// non-numeric value yields 0 — so an absent numeric sort field orders as a zero
+// (interleaved with real zeros), NOT last. encodeKey and evalTerms rely on this.
 export function numField(stored: Record<string, unknown>, field: string): number {
   const v = Number(stored[field]);
   return Number.isNaN(v) ? 0 : v;

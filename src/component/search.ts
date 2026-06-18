@@ -215,6 +215,10 @@ export const search = query({
 
     const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
 
+    // `found` is the materialized-candidate count. When `found_approximate` is
+    // true (driver scan truncated), it is a FLOOR, not the exact total — only
+    // the single-exact-term / no-filter / no-queryBy case is corrected to the
+    // exact terms.docCount below.
     let found = matchedIds.length;
     let found_approximate = filterTruncated || windowTruncated;
     if (truncated) {
