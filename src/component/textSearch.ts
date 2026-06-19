@@ -133,9 +133,10 @@ export async function matchTokens(
     ? passing.filter((p) => filterDocKeys.has(p.docKey))
     : passing;
 
-  // Phase B — resolve docIds for the passing docs ONLY (same read set as the
-  // old early-exit), in parallel. Build scoreById in passing (driverScore)
-  // order so insertion order is unchanged.
+  // Phase B — resolve docIds for the passing docs ONLY (finalPassing: the
+  // filterDocKeys-intersected subset, so the read set shrinks when a filter is
+  // applied), in parallel. Build scoreById in finalPassing order so insertion
+  // order is unchanged.
   const docs = await Promise.all(
     finalPassing.map((p) => loadDocumentByDocKey(ctx, collection, p.docKey)),
   );

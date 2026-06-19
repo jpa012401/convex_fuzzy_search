@@ -231,7 +231,7 @@ export const search = query({
       // FILTER-ONLY PATH: work in docKeys; resolve docIds only for the docs we
       // actually need. Facets via the inverted index need no docs; only custom
       // ordering (or a facet request that can't use the index) needs the full set.
-      const keys = [...filterDocKeys];
+      const keys = [...filterDocKeys].sort((a, b) => a - b);
       const facetsNeedDocs = hasFacets && !(filterDocKeys && filterComplete);
       byId = new Map<string, unknown>();
       matchedIds = [];
