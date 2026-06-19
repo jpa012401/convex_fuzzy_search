@@ -1,4 +1,5 @@
 import type { QueryCtx } from "./_generated/server";
+import { readStringPostingDocKeys, readNumericRangeDocKeys } from "./filterPostings";
 
 export type Predicate = (stored: Record<string, unknown>) => boolean;
 export type FieldType = "string" | "number";
@@ -194,58 +195,25 @@ export function parseFilter(input: string, fieldTypes: Record<string, FieldType>
 
 type ResolveResult = { ids: Set<string>; docKeys: Set<number>; truncated: boolean; complete: boolean };
 
-function rowsToResult(rows: { docId: string; docKey?: number }[], budget: number): ResolveResult {
-  const kept = rows.slice(0, budget);
-  const docKeys = new Set<number>();
-  let complete = true;
-  for (const r of kept) {
-    if (r.docKey === undefined) { complete = false; continue; }
-    docKeys.add(r.docKey);
-  }
-  return {
-    ids: new Set(kept.map((r) => r.docId)),
-    docKeys,
-    truncated: rows.length > budget,
-    complete,
-  };
+function keysResult(r: { docKeys: number[]; truncated: boolean }): ResolveResult {
+  return { ids: new Set<string>(), docKeys: new Set(r.docKeys), truncated: r.truncated, complete: true };
 }
 
-async function strIds(ctx: QueryCtx, collection: string, field: string, value: string, budget: number): Promise<ResolveResult> {
-  const rows = await ctx.db
-    .query("filters")
-    .withIndex("by_str", (q) => q.eq("collection", collection).eq("field", field).eq("strVal", value))
-    .take(budget + 1);
-  return rowsToResult(rows, budget);
+async function strKeys(ctx: QueryCtx, collection: string, field: string, value: string, budget: number) {
+  return keysResult(await readStringPostingDocKeys(ctx, collection, field, value, budget));
 }
-// Numeric filter fields are written with `numVal = Number(value)` only when coercible; rows lacking `numVal` must never match numeric comparisons.
-async function numEqIds(ctx: QueryCtx, collection: string, field: string, num: number, budget: number): Promise<ResolveResult> {
-  const rows = await ctx.db
-    .query("filters")
-    .withIndex("by_num", (q) => q.eq("collection", collection).eq("field", field).eq("numVal", num))
-    .take(budget + 1);
-  return rowsToResult(rows, budget);
+async function numEqKeys(ctx: QueryCtx, collection: string, field: string, num: number, budget: number) {
+  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, num, num, true, true, budget));
 }
-async function numCmpIds(ctx: QueryCtx, collection: string, field: string, op: string, num: number, budget: number): Promise<ResolveResult> {
-  const rows = await ctx.db
-    .query("filters")
-    .withIndex("by_num", (q) => {
-      const b = q.eq("collection", collection).eq("field", field);
-      return op === ">" ? b.gt("numVal", num)
-        : op === ">=" ? b.gte("numVal", num)
-        : op === "<" ? b.lt("numVal", num)
-        : b.lte("numVal", num);
-    })
-    .take(budget + 1);
-  // Rows lacking numVal are dropped here; a row missing both numVal and docKey indicates a write bug, not a backfill state, so complete=false is not warranted.
-  return rowsToResult(rows.filter((r) => r.numVal !== undefined), budget);
+async function numCmpKeys(ctx: QueryCtx, collection: string, field: string, op: string, num: number, budget: number) {
+  const lo = op === ">" || op === ">=" ? num : Number.NEGATIVE_INFINITY;
+  const hi = op === "<" || op === "<=" ? num : Number.POSITIVE_INFINITY;
+  const loInclusive = op === ">=";
+  const hiInclusive = op === "<=";
+  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, lo, hi, loInclusive, hiInclusive, budget));
 }
-async function numRangeIds(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number, budget: number): Promise<ResolveResult> {
-  const rows = await ctx.db
-    .query("filters")
-    .withIndex("by_num", (q) => q.eq("collection", collection).eq("field", field).gte("numVal", lo).lte("numVal", hi))
-    .take(budget + 1);
-  // Rows lacking numVal are dropped here; a row missing both numVal and docKey indicates a write bug, not a backfill state, so complete=false is not warranted.
-  return rowsToResult(rows.filter((r) => r.numVal !== undefined), budget);
+async function numRangeKeys(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number, budget: number) {
+  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, lo, hi, true, true, budget));
 }
 
 export async function resolveAstToDocIds(
@@ -258,52 +226,44 @@ export async function resolveAstToDocIds(
     case "and": {
       const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
       const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
-      const [small, big] = a.ids.size <= b.ids.size ? [a.ids, b.ids] : [b.ids, a.ids];
-      const out = new Set<string>();
-      for (const id of small) if (big.has(id)) out.add(id);
       const [smallK, bigK] = a.docKeys.size <= b.docKeys.size ? [a.docKeys, b.docKeys] : [b.docKeys, a.docKeys];
       const outK = new Set<number>();
       for (const k of smallK) if (bigK.has(k)) outK.add(k);
-      return { ids: out, docKeys: outK, truncated: a.truncated || b.truncated, complete: a.complete && b.complete };
+      return { ids: new Set<string>(), docKeys: outK, truncated: a.truncated || b.truncated, complete: a.complete && b.complete };
     }
     case "or": {
       const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
       const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
-      // Merge b.docKeys first so they're always present even if ids budget triggers early-return below.
-      for (const k of b.docKeys) a.docKeys.add(k);
-      for (const id of b.ids) {
-        if (a.ids.size >= budget) return { ids: a.ids, docKeys: a.docKeys, truncated: true, complete: a.complete && b.complete };
-        a.ids.add(id);
+      const outK = new Set<number>(a.docKeys);
+      let truncated = a.truncated || b.truncated;
+      for (const k of b.docKeys) {
+        if (outK.size >= budget) { truncated = true; break; }
+        outK.add(k);
       }
-      return { ids: a.ids, docKeys: a.docKeys, truncated: a.truncated || b.truncated, complete: a.complete && b.complete };
+      return { ids: new Set<string>(), docKeys: outK, truncated, complete: a.complete && b.complete };
     }
     case "exact":
       return ast.type === "number"
-        ? await numEqIds(ctx, collection, ast.field, Number(ast.value), budget)
-        : await strIds(ctx, collection, ast.field, ast.value, budget);
+        ? await numEqKeys(ctx, collection, ast.field, Number(ast.value), budget)
+        : await strKeys(ctx, collection, ast.field, ast.value, budget);
     case "inSet": {
-      const out = new Set<string>();
       const outK = new Set<number>();
       let truncated = false;
-      let complete = true;
       for (const v of ast.values) {
-        const result = ast.type === "number"
-          ? await numEqIds(ctx, collection, ast.field, Number(v), budget)
-          : await strIds(ctx, collection, ast.field, v, budget);
-        truncated ||= result.truncated;
-        complete &&= result.complete;
-        // Merge docKeys before the ids loop so an early-return at budget still includes this result's keys.
-        for (const k of result.docKeys) outK.add(k);
-        for (const id of result.ids) {
-          if (out.size >= budget) return { ids: out, docKeys: outK, truncated: true, complete };
-          out.add(id);
+        const r = ast.type === "number"
+          ? await numEqKeys(ctx, collection, ast.field, Number(v), budget)
+          : await strKeys(ctx, collection, ast.field, v, budget);
+        truncated ||= r.truncated;
+        for (const k of r.docKeys) {
+          if (outK.size >= budget) { truncated = true; break; }
+          outK.add(k);
         }
       }
-      return { ids: out, docKeys: outK, truncated, complete };
+      return { ids: new Set<string>(), docKeys: outK, truncated, complete: true };
     }
     case "cmp":
-      return await numCmpIds(ctx, collection, ast.field, ast.op, ast.num, budget);
+      return await numCmpKeys(ctx, collection, ast.field, ast.op, ast.num, budget);
     case "range":
-      return await numRangeIds(ctx, collection, ast.field, ast.lo, ast.hi, budget);
+      return await numRangeKeys(ctx, collection, ast.field, ast.lo, ast.hi, budget);
   }
 }

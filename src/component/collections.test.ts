@@ -188,6 +188,42 @@ describe("storedFields 'derived'", () => {
   });
 });
 
+describe("numeric-only filterField deletion guard", () => {
+  it("detects index rows for a numeric-only collection and blocks re-creation", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "listings",
+      searchFields: ["title"],
+      storedFields: "all",
+      filterFields: [{ field: "price", type: "number" as const }],
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "listings",
+      id: "l1",
+      doc: { title: "Laptop", price: 999 },
+    });
+
+    // Simulate deletion-in-progress: remove the collections row but leave index rows
+    await t.run(async (ctx) => {
+      const collection = await ctx.db
+        .query("collections")
+        .withIndex("by_name", (q) => q.eq("name", "listings"))
+        .unique();
+      if (!collection) throw new Error("missing collection");
+      await ctx.db.delete(collection._id);
+    });
+
+    // With only numeric filterPostings rows present, blockIfDeletionInProgress must throw
+    await expect(
+      t.mutation(api.collections.createCollection, {
+        name: "listings",
+        searchFields: ["title"],
+      }),
+    ).rejects.toThrow(/deletion in progress/);
+  });
+});
+
 describe("filter/facet field config", () => {
   it("stores filterFields and facetFields", async () => {
     const t = convexTest(schema, modules);

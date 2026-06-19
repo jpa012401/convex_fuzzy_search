@@ -8,93 +8,105 @@ import { parseFilterAst, resolveAstToDocIds } from "./filter";
 const modules = import.meta.glob("./**/*.ts");
 const types = { brand: "string", price: "number" } as const;
 
-async function seedFilters(t: any) {
-  await t.run(async (ctx: any) => {
-    const rows = [
-      { docId: "a", brand: "Aurora", price: 90 },
-      { docId: "b", brand: "Aurora", price: 110 },
-      { docId: "c", brand: "Nimbus", price: 150 },
-    ];
-    for (const r of rows) {
-      await ctx.db.insert("filters", { collection: "shop", field: "brand", docId: r.docId, strVal: r.brand });
-      await ctx.db.insert("filters", { collection: "shop", field: "price", docId: r.docId, numVal: r.price });
-    }
+async function setup() {
+  const t = convexTest(schema, modules);
+  registerAggregate(t, "docCount");
+  await t.mutation(api.collections.createCollection, {
+    name: "shop",
+    searchFields: ["name"],
+    storedFields: "all",
+    filterFields: [
+      { field: "brand", type: "string" as const },
+      { field: "price", type: "number" as const },
+    ],
   });
+  const docs = [
+    { id: "a", brand: "Aurora", price: 90 },
+    { id: "b", brand: "Aurora", price: 110 },
+    { id: "c", brand: "Nimbus", price: 150 },
+  ];
+  for (const d of docs) {
+    await t.mutation(api.write.upsert, { collection: "shop", id: d.id, doc: { name: d.id, brand: d.brand, price: d.price } });
+  }
+  return t;
 }
-const resolve = async (t: any, expr: string): Promise<Set<string>> => {
-  const ids: string[] = await t.run(async (ctx: any) =>
-    [...(await resolveAstToDocIds(ctx, "shop", parseFilterAst(expr, types))).ids],
-  );
+
+// Resolve to the set of docIds by mapping docKeys -> documents.by_collection_docKey.
+const resolveIds = async (t: any, expr: string): Promise<Set<string>> => {
+  const ids: string[] = await t.run(async (ctx: any) => {
+    const r = await resolveAstToDocIds(ctx, "shop", parseFilterAst(expr, types));
+    const out: string[] = [];
+    for (const k of r.docKeys) {
+      const doc = await ctx.db
+        .query("documents")
+        .withIndex("by_collection_docKey", (q: any) => q.eq("collection", "shop").eq("docKey", k))
+        .unique();
+      if (doc) out.push(doc.docId);
+    }
+    return out;
+  });
   return new Set(ids);
 };
 const sorted = (s: Set<string>) => [...s].sort();
 
-describe("resolveAstToDocIds", () => {
+describe("resolveAstToDocIds (filterPostings-backed)", () => {
   it("exact, in-set, comparator, range, AND, OR", async () => {
-    const t = convexTest(schema, modules);
-    registerAggregate(t, "docCount");
-    await seedFilters(t);
-    expect(sorted(await resolve(t, "brand:Aurora"))).toEqual(["a", "b"]);
-    expect(sorted(await resolve(t, "brand:[Aurora,Nimbus]"))).toEqual(["a", "b", "c"]);
-    expect(sorted(await resolve(t, "price:>100"))).toEqual(["b", "c"]);
-    expect(sorted(await resolve(t, "price:[100..200]"))).toEqual(["b", "c"]);
-    expect(sorted(await resolve(t, "brand:Aurora && price:>100"))).toEqual(["b"]);
-    expect(sorted(await resolve(t, "brand:Nimbus || price:<100"))).toEqual(["a", "c"]);
+    const t = await setup();
+    expect(sorted(await resolveIds(t, "brand:Aurora"))).toEqual(["a", "b"]);
+    expect(sorted(await resolveIds(t, "brand:[Aurora,Nimbus]"))).toEqual(["a", "b", "c"]);
+    expect(sorted(await resolveIds(t, "price:>100"))).toEqual(["b", "c"]);
+    expect(sorted(await resolveIds(t, "price:[100..200]"))).toEqual(["b", "c"]);
+    expect(sorted(await resolveIds(t, "brand:Aurora && price:>100"))).toEqual(["b"]);
+    expect(sorted(await resolveIds(t, "brand:Nimbus || price:<100"))).toEqual(["a", "c"]);
   });
 
-  it("comparators exclude rows with no numeric value (undefined numVal)", async () => {
-    const t = convexTest(schema, modules);
-    registerAggregate(t, "docCount");
-    await seedFilters(t); // a:90, b:110, c:150 (all numeric)
-    // Insert a row under the numeric field 'price' with NO numVal (strVal only),
-    // simulating a non-coercible/missing value that must NOT match a comparator.
-    await t.run(async (ctx: any) => {
-      await ctx.db.insert("filters", { collection: "shop", field: "price", docId: "x", strVal: "n/a" });
-    });
-    // "x" has undefined numVal -> must be excluded from < and <=.
-    expect(sorted(await resolve(t, "price:<100"))).toEqual(["a"]);
-    expect(sorted(await resolve(t, "price:<=90"))).toEqual(["a"]);
-  });
-
-  it("caps broad filter reads and reports truncation", async () => {
-    const t = convexTest(schema, modules);
-    registerAggregate(t, "docCount");
-    await t.run(async (ctx: any) => {
-      for (let i = 0; i < 8; i++) {
-        await ctx.db.insert("filters", {
-          collection: "shop",
-          field: "brand",
-          docId: `p${i}`,
-          strVal: "Aurora",
-        });
-      }
-    });
-    const result = await t.run(async (ctx: any) => {
-      const resolved = await resolveAstToDocIds(ctx, "shop", parseFilterAst("brand:Aurora", types), 3);
-      return { size: resolved.ids.size, truncated: resolved.truncated };
-    });
-    expect(result.size).toBeLessThanOrEqual(3);
-    expect(result.truncated).toBe(true);
-  });
-
-  it("resolves a filter to docKeys and reports complete", async () => {
+  it("price:>100 excludes a doc priced exactly 100 (strict-comparator boundary)", async () => {
     const t = convexTest(schema, modules);
     registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
-      name: "fr",
+      name: "shop",
       searchFields: ["name"],
       storedFields: "all",
+      filterFields: [
+        { field: "brand", type: "string" as const },
+        { field: "price", type: "number" as const },
+      ],
+    });
+    await t.mutation(api.write.upsert, { collection: "shop", id: "exact100", doc: { name: "exact100", brand: "X", price: 100 } });
+    await t.mutation(api.write.upsert, { collection: "shop", id: "above100", doc: { name: "above100", brand: "X", price: 101 } });
+    // price:>100 must exclude exactly-100 and include 101
+    const ids: string[] = await t.run(async (ctx: any) => {
+      const r = await resolveAstToDocIds(ctx, "shop", parseFilterAst("price:>100", { price: "number" }));
+      const out: string[] = [];
+      for (const k of r.docKeys) {
+        const doc = await ctx.db
+          .query("documents")
+          .withIndex("by_collection_docKey", (q: any) => q.eq("collection", "shop").eq("docKey", k))
+          .unique();
+        if (doc) out.push(doc.docId);
+      }
+      return out;
+    });
+    const result = new Set(ids);
+    expect(result.has("exact100")).toBe(false);
+    expect(result.has("above100")).toBe(true);
+  });
+
+  it("caps broad reads and reports truncation (on docKeys)", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "shop", searchFields: ["name"], storedFields: "all",
       filterFields: [{ field: "brand", type: "string" as const }],
     });
-    await t.mutation(api.write.upsert, { collection: "fr", id: "a", doc: { name: "x", brand: "Acme" } });
-    await t.mutation(api.write.upsert, { collection: "fr", id: "b", doc: { name: "y", brand: "Acme" } });
-    const res = await t.run(async (ctx) => {
-      const { resolveAstToDocIds, parseFilterAst } = await import("./filter");
-      const r = await resolveAstToDocIds(ctx, "fr", parseFilterAst("brand:Acme", { brand: "string" }));
-      return { docKeysSize: r.docKeys.size, complete: r.complete, idsSize: r.ids.size };
+    for (let i = 0; i < 8; i++) {
+      await t.mutation(api.write.upsert, { collection: "shop", id: `p${i}`, doc: { name: "n", brand: "Aurora" } });
+    }
+    const result = await t.run(async (ctx: any) => {
+      const r = await resolveAstToDocIds(ctx, "shop", parseFilterAst("brand:Aurora", { brand: "string" }), 3);
+      return { size: r.docKeys.size, truncated: r.truncated };
     });
-    expect(res.docKeysSize).toBe(2);
-    expect(res.complete).toBe(true);
-    expect(res.idsSize).toBe(2);
+    expect(result.size).toBeLessThanOrEqual(3);
+    expect(result.truncated).toBe(true);
   });
 });

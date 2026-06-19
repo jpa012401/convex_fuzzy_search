@@ -143,6 +143,8 @@ export async function readNumericRangeDocKeys(
   field: string,
   lo: number,
   hi: number,
+  loInclusive: boolean,
+  hiInclusive: boolean,
   budget: number,
 ): Promise<{ docKeys: number[]; truncated: boolean }> {
   const loB = Number.isFinite(lo) ? numBucketOf(lo) : Number.NEGATIVE_INFINITY;
@@ -152,14 +154,18 @@ export async function readNumericRangeDocKeys(
   const q = ctx.db
     .query("filterPostings")
     .withIndex("by_num", (qb) => {
-      let b = qb.eq("collection", collection).eq("field", field);
-      if (Number.isFinite(loB)) b = b.gte("numBucket", loB as number);
-      if (Number.isFinite(hiB)) b = b.lte("numBucket", hiB as number);
-      return b;
+      const base = qb.eq("collection", collection).eq("field", field);
+      const hasLo = Number.isFinite(loB);
+      const hasHi = Number.isFinite(hiB);
+      if (hasLo && hasHi) return base.gte("numBucket", loB as number).lte("numBucket", hiB as number);
+      if (hasLo) return base.gte("numBucket", loB as number);
+      if (hasHi) return base.lte("numBucket", hiB as number);
+      return base;
     });
   for await (const row of q) {
     for (const e of row.entries ?? []) {
-      if (e.num < lo || e.num > hi) continue; // edge-bucket value filter
+      // Edge-bucket value filter with inclusive/exclusive boundary support
+      if (e.num < lo || (!loInclusive && e.num === lo) || e.num > hi || (!hiInclusive && e.num === hi)) continue;
       seen.add(e.docKey);
       if (seen.size > budget) { truncated = true; break; }
     }

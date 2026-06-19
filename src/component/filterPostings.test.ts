@@ -29,7 +29,7 @@ describe("filterPostings — string (fill-based)", () => {
         .collect();
       const read = await readStringPostingDocKeys(ctx, "c", "brand", "Aurora", 10_000);
       return {
-        buckets: rows.map((r) => r.docKeys.length).sort((a, b) => b - a),
+        buckets: rows.map((r) => (r.docKeys ?? []).length).sort((a, b) => b - a),
         read: { docKeys: [...read.docKeys].sort((a, b) => a - b), truncated: read.truncated },
       };
     });
@@ -82,12 +82,12 @@ describe("filterPostings — numeric (value-bucketed range)", () => {
     await t.run(async (ctx) => {
       for (const { k, v } of vals) await addNumericPosting(ctx, "c", k, "price", v);
     });
-    const inRange = await t.run((ctx) => readNumericRangeDocKeys(ctx, "c", "price", 50, 150, 10_000));
+    const inRange = await t.run((ctx) => readNumericRangeDocKeys(ctx, "c", "price", 50, 150, true, true, 10_000));
     expect([...inRange.docKeys].sort((a, b) => a - b)).toEqual([1, 2, 3]);
     expect(inRange.truncated).toBe(false);
 
     const open = await t.run((ctx) =>
-      readNumericRangeDocKeys(ctx, "c", "price", 100, Number.POSITIVE_INFINITY, 10_000),
+      readNumericRangeDocKeys(ctx, "c", "price", 100, Number.POSITIVE_INFINITY, true, true, 10_000),
     );
     expect([...open.docKeys].sort((a, b) => a - b)).toEqual([2, 3, 4, 5]);
   });
@@ -98,8 +98,19 @@ describe("filterPostings — numeric (value-bucketed range)", () => {
       await addNumericPosting(ctx, "c", 9, "price", 42);
       await removeNumericPosting(ctx, "c", 9, "price", 42);
     });
-    const r = await t.run((ctx) => readNumericRangeDocKeys(ctx, "c", "price", 0, 1000, 10_000));
+    const r = await t.run((ctx) => readNumericRangeDocKeys(ctx, "c", "price", 0, 1000, true, true, 10_000));
     expect([...r.docKeys]).toEqual([]);
+  });
+
+  it("excludes a doc priced exactly at lo when loInclusive=false", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await addNumericPosting(ctx, "c", 10, "price", 100); // exactly at boundary
+      await addNumericPosting(ctx, "c", 11, "price", 101); // above boundary
+    });
+    // loInclusive=false means >100, so docKey 10 (price=100) must be excluded
+    const r = await t.run((ctx) => readNumericRangeDocKeys(ctx, "c", "price", 100, Number.POSITIVE_INFINITY, false, true, 10_000));
+    expect([...r.docKeys].sort((a, b) => a - b)).toEqual([11]);
   });
 
   it("uses NUMERIC_BUCKET_WIDTH to bucket values", async () => {

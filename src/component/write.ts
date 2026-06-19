@@ -8,6 +8,7 @@ import { applyTermDiff } from "./terms";
 import { addDoc, removeDoc } from "./counters";
 import { incrementFacet, decrementFacet } from "./facetCounts";
 import { addFacetPostings, removeFacetPostings } from "./facetPostings";
+import { addStringPosting, removeStringPosting, addNumericPosting, removeNumericPosting } from "./filterPostings";
 import { addSortEntry, removeSortEntry } from "./sortIndex";
 import type { SortKey } from "./ranking";
 import { indexRelevantFields } from "./storedFields";
@@ -42,20 +43,8 @@ async function clearDoc(
   docId: string,
   facetFields: string[],
   sortSpecs: SortKey[][],
+  filterFields: { field: string; type: "string" | "number" }[],
 ): Promise<{ oldTerms: Set<string>; existed: boolean }> {
-  // Reads ALL of this doc's filter rows. NOT bounded by the current
-  // filterFields count: filterField removals are lazy (see diffCollection.ts),
-  // so a doc may retain rows for dropped fields that must still be cleaned up
-  // here. The row count is bounded in practice by the doc's historical filter
-  // fields, not by collection size.
-  const filt = await ctx.db
-    .query("filters")
-    .withIndex("by_doc", (q) =>
-      q.eq("collection", collection).eq("docId", docId),
-    )
-    .collect();
-  for (const r of filt) await ctx.db.delete(r._id);
-
   const existing = await loadDocumentByDocId(ctx, collection, docId);
   const oldTermEntries = existing
     ? await loadDocTerms(ctx, collection, existing.docKey)
@@ -65,6 +54,19 @@ async function clearDoc(
     await removePostingEntries(ctx, collection, existing.docKey, oldTermEntries);
     await deleteDocTerms(ctx, collection, existing.docKey);
     const stored = existing.stored as Record<string, unknown>;
+    // Remove filterPostings for this doc's current filter field values.
+    for (const f of filterFields) {
+      const raw = stored[f.field];
+      if (raw === undefined || raw === null) continue;
+      if (f.type === "string") {
+        await removeStringPosting(ctx, collection, existing.docKey, f.field, String(raw));
+      } else {
+        const num = Number(raw);
+        if (!Number.isNaN(num)) {
+          await removeNumericPosting(ctx, collection, existing.docKey, f.field, num);
+        }
+      }
+    }
     // Facet invariant: incrementFacet (on upsert) stringifies the RAW input
     // value; this decrement stringifies the PROJECTED stored value. They net to
     // zero only because every projection mode preserves facet-field values
@@ -95,7 +97,7 @@ async function upsertInternal(
 ) {
   const col = await requireCollection(ctx, collection);
   const docKey = await ensureDocKey(ctx, collection, id);
-  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? [], col.sortSpecs ?? []);
+  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? [], col.sortSpecs ?? [], col.filterFields ?? []);
 
   const newTerms = new Set<string>();
   const termEntries: DocTerm[] = [];
@@ -125,23 +127,11 @@ async function upsertInternal(
     const value = doc[f.field];
     if (value === undefined || value === null) continue;
     if (f.type === "string") {
-      await ctx.db.insert("filters", {
-        collection,
-        field: f.field,
-        docId: id,
-        docKey,
-        strVal: String(value),
-      });
+      await addStringPosting(ctx, collection, docKey, f.field, String(value));
     } else {
       const num = Number(value);
       if (!Number.isNaN(num)) {
-        await ctx.db.insert("filters", {
-          collection,
-          field: f.field,
-          docId: id,
-          docKey,
-          numVal: num,
-        });
+        await addNumericPosting(ctx, collection, docKey, f.field, num);
       }
     }
   }
@@ -178,7 +168,7 @@ export const deleteDoc = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const col = await requireCollection(ctx, args.collection);
-    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? [], col.sortSpecs ?? []);
+    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? [], col.sortSpecs ?? [], col.filterFields ?? []);
     await applyTermDiff(ctx, args.collection, oldTerms, new Set());
     if (existed) await removeDoc(ctx, args.collection, args.id);
     return null;
