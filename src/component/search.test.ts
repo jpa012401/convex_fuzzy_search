@@ -501,4 +501,74 @@ describe("S2 indexed filtering", () => {
       { value: "Nimbus", count: 1 },
     ]);
   });
+
+  it("filter-only numeric range returns correct found + page without loading all matches", async () => {
+    // The page-only filter branch loads ONLY the page's docs (via docKey), but
+    // `found` must report the FULL matched count, not the page size.
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "priced",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "price", type: "number" }],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "priced",
+      docs: [
+        { id: "a", doc: { name: "a", price: 40 } },
+        { id: "b", doc: { name: "b", price: 90 } },
+        { id: "c", doc: { name: "c", price: 110 } },
+        { id: "d", doc: { name: "d", price: 150 } },
+        { id: "e", doc: { name: "e", price: 300 } },
+      ],
+    });
+    const r = await t.query(api.search.search, {
+      collection: "priced", q: "", filterBy: "price:[50..150]", perPage: 2, page: 1,
+    });
+    expect(r.found).toBe(3); // 90, 110, 150 match; page returns only 2
+    expect(r.hits.length).toBe(2);
+  });
+
+  it("filter-only paging: found is the full match count over 100 matches", async () => {
+    // 100 matching docs, perPage 10 -> found 100, exactly 10 hits on the page.
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "many",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "flag", type: "string" }],
+    });
+    const docs = Array.from({ length: 100 }, (_, i) => ({
+      id: `d${String(i).padStart(3, "0")}`,
+      doc: { name: `item ${i}`, flag: "yes" },
+    }));
+    for (let i = 0; i < docs.length; i += 50) {
+      await t.mutation(api.write.upsertMany, { collection: "many", docs: docs.slice(i, i + 50) });
+    }
+    const r = await t.query(api.search.search, {
+      collection: "many", q: "", filterBy: "flag:yes", perPage: 10, page: 1,
+    });
+    expect(r.found).toBe(100);
+    expect(r.hits.length).toBe(10);
+    // Page 2 must return the NEXT 10 (disjoint from page 1), not an empty slice.
+    const r2 = await t.query(api.search.search, {
+      collection: "many", q: "", filterBy: "flag:yes", perPage: 10, page: 2,
+    });
+    expect(r2.found).toBe(100);
+    expect(r2.hits.length).toBe(10);
+    const p1 = new Set(r.hits.map((h: any) => h.id));
+    expect(r2.hits.some((h: any) => p1.has(h.id))).toBe(false);
+  });
+
+  it("filter + facet intersects via the index", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, {
+      collection: "shop", q: "", filterBy: "brand:Aurora", facetBy: ["brand"], perPage: 2,
+    });
+    expect(r.found).toBe(2);
+    expect(r.facet_counts[0].field_name).toBe("brand");
+    expect(r.facet_counts[0].counts).toEqual([{ value: "Aurora", count: 2 }]);
+  });
 });

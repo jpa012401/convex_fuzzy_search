@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
 import { matchTokens } from "./textSearch";
+import { loadDocumentByDocKey } from "./docKeys";
 import { parseFilterAst, resolveAstToDocIds } from "./filter";
 import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
@@ -157,8 +158,7 @@ export const search = query({
       }
     }
 
-    // ---- Resolve filter to a docId set via the index (S2), if present.
-    let filterIds: Set<string> | null = null;
+    // ---- Resolve filter to a docKey set via the bucketed index, if present.
     let filterDocKeys: Set<number> | null = null;
     let filterComplete = false;
     let filterTruncated = false;
@@ -170,11 +170,13 @@ export const search = query({
         args.collection,
         parseFilterAst(args.filterBy as string, fieldTypes),
       );
-      filterIds = resolved.ids;
       filterDocKeys = resolved.docKeys;
       filterComplete = resolved.complete;
       filterTruncated = resolved.truncated;
     }
+    // The full matched count (before paging). The page-only filter branch loads
+    // only one page of docs, so `matchedIds.length` is NOT the total — use this.
+    const filterMatchCount = filterDocKeys ? filterDocKeys.size : null;
 
     // ---- Build the working set (byId) + match ids + scores.
     let matchedIds: string[];
@@ -186,16 +188,28 @@ export const search = query({
     let singleExactTerm: string | null = null;
     let reranked = true;
     let deferredPageLoad = false;
+    // The filter-only page-only branch resolves docIds for just this page (in
+    // docKey order), so `matchedIds` already IS the page — the downstream page
+    // slice must take it whole rather than re-slicing at pageStart.
+    let filterPageOnly = false;
 
     if (tokens.length > 0) {
-      // TEXT PATH: driver-token intersection (bounded). Intersect with filter.
-      const m = await matchTokens(ctx, args.collection, tokens, args.queryBy);
+      // TEXT PATH: driver-token intersection (bounded). The filter docKeys are
+      // intersected INSIDE matchTokens (before its docId resolution), so
+      // scoreById comes back already narrowed to docs matching BOTH.
+      const m = await matchTokens(
+        ctx,
+        args.collection,
+        tokens,
+        args.queryBy,
+        undefined,
+        filterDocKeys ?? undefined,
+      );
       scoreById = m.scoreById;
       for (const term of m.matchedTerms) matchedTerms.add(term);
       truncated = m.truncated;
       singleExactTerm = m.singleExactTerm;
       matchedIds = [...scoreById.keys()];
-      if (filterIds) matchedIds = matchedIds.filter((id) => filterIds!.has(id));
       // Only facet tallying and stored-field ordering (rankBy/sortBy/rank) need
       // the WHOLE matched set's stored docs. Plain relevance-ordered text search
       // needs stored docs for the page only (highlighting), and orders by the
@@ -207,16 +221,39 @@ export const search = query({
         byId = new Map<string, unknown>();
         deferredPageLoad = true;
       }
-    } else if (filterIds) {
-      matchedIds = [...filterIds];
-      // Facets via the inverted index need no docs; only custom ordering (or a
-      // facet request that can't use the index) needs the full matched set.
-      const facetsNeedDocs = hasFacets && !(tokens.length === 0 && filterDocKeys && filterComplete);
+    } else if (filterDocKeys) {
+      // FILTER-ONLY PATH: work in docKeys; resolve docIds only for the docs we
+      // actually need. Facets via the inverted index need no docs; only custom
+      // ordering (or a facet request that can't use the index) needs the full set.
+      const keys = [...filterDocKeys];
+      const facetsNeedDocs = hasFacets && !(filterDocKeys && filterComplete);
+      byId = new Map<string, unknown>();
+      matchedIds = [];
       if (!facetsNeedDocs && !hasCustomOrder) {
+        // page-only: map just this page's docKeys -> documents. matchedIds then
+        // holds only this page (in docKey order), so flag it for the page slice.
+        filterPageOnly = true;
         const pageStart = (page - 1) * perPage;
-        byId = await loadDocs(ctx, args.collection, matchedIds.slice(pageStart, pageStart + perPage));
+        const pageKeys = keys.slice(pageStart, pageStart + perPage);
+        const rows = await Promise.all(
+          pageKeys.map((k) => loadDocumentByDocKey(ctx, args.collection, k)),
+        );
+        for (const row of rows) {
+          if (!row) continue;
+          matchedIds.push(row.docId);
+          byId.set(row.docId, row.stored);
+        }
+        // `found` is the full matched set (filterMatchCount), not just the page.
       } else {
-        byId = await loadDocs(ctx, args.collection, matchedIds);
+        // map ALL matched docKeys -> documents (for facet tally / custom order).
+        const rows = await Promise.all(
+          keys.map((k) => loadDocumentByDocKey(ctx, args.collection, k)),
+        );
+        for (const row of rows) {
+          if (!row) continue;
+          matchedIds.push(row.docId);
+          byId.set(row.docId, row.stored);
+        }
       }
     } else if (hasRank) {
       // RANK BROWSE: candidate window off the profile's base sortSpec (batched).
@@ -237,13 +274,20 @@ export const search = query({
     // true (driver scan truncated), it is a FLOOR, not the exact total — only
     // the single-exact-term / no-filter / no-queryBy case is corrected to the
     // exact terms.docCount below.
-    let found = matchedIds.length;
+    // The filter-only branch may put only one page in matchedIds; report the
+    // FULL filter match count instead. The text path's matchedIds is already the
+    // complete text∩filter set, so it must use matchedIds.length (not the full
+    // filter size). Hence only override `found` when there is no text query.
+    let found =
+      tokens.length === 0 && filterMatchCount !== null
+        ? filterMatchCount
+        : matchedIds.length;
     let found_approximate = filterTruncated || windowTruncated;
     if (truncated) {
       found_approximate = true;
       // terms.docCount counts the term across ALL searchFields, so it is only an
       // exact total when the query is not narrowed by a filter or queryBy.
-      if (singleExactTerm && !filterIds && !args.queryBy) {
+      if (singleExactTerm && !filterDocKeys && !args.queryBy) {
         const termRow = await ctx.db
           .query("terms")
           .withIndex("by_collection_term", (q) =>
@@ -253,10 +297,10 @@ export const search = query({
         if (termRow) found = termRow.docCount;
       }
     }
-    if (hasRank && tokens.length === 0 && !filterIds) {
+    if (hasRank && tokens.length === 0 && !filterDocKeys) {
       found = out_of;
     }
-    if (windowTruncated && tokens.length === 0 && !filterIds) {
+    if (windowTruncated && tokens.length === 0 && !filterDocKeys) {
       found = out_of;
     }
 
@@ -279,7 +323,9 @@ export const search = query({
       const score = (id: string) =>
         evalTerms(storedOf(id), rankProfile!.terms, args.rank!.weights, rawScore(id), ctxRank);
       matchedIds = [...ordered].sort((a, b) => score(b) - score(a) || (baseIdx.get(a)! - baseIdx.get(b)!));
-    } else {
+    } else if (!filterPageOnly) {
+      // filterPageOnly already holds the page in docKey order; re-sorting it here
+      // would scramble that page-local order (and only the page is loaded), so skip.
       const orderScore = (id: string) => orderingScore(rawScore(id), storedOf(id), args.rankBy);
       matchedIds.sort((a, b) =>
         compareMatches(a, b, { score: orderScore, stored: storedOf, sortBy: args.sortBy }),
@@ -290,7 +336,7 @@ export const search = query({
     if (hasFacets) {
       const declared = new Set(collection.facetFields ?? []);
       const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
-      const globalFacets = hasRank && tokens.length === 0 && !filterIds;
+      const globalFacets = hasRank && tokens.length === 0 && !filterDocKeys;
       for (const field of args.facetBy as string[]) {
         if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
         if (globalFacets) {
@@ -329,7 +375,7 @@ export const search = query({
 
     const pageStart = (page - 1) * perPage;
     let pageIds: string[];
-    if (hasRank && tokens.length === 0 && !filterIds) {
+    if (hasRank && tokens.length === 0 && !filterDocKeys) {
       const windowPart = matchedIds.slice(pageStart, pageStart + perPage);
       if (pageStart + perPage > matchedIds.length) {
         // page extends past the re-ranked window -> fill from plain base order
@@ -347,6 +393,9 @@ export const search = query({
       } else {
         pageIds = windowPart;
       }
+    } else if (filterPageOnly) {
+      // matchedIds already IS this page (loaded at pageStart in docKey order).
+      pageIds = matchedIds;
     } else {
       pageIds = matchedIds.slice(pageStart, pageStart + perPage);
     }
