@@ -199,17 +199,21 @@ export default defineSchema({
     .index("by_collection_gram", ["collection", "gram"]) // fuzzy candidate lookup
     .index("by_collection_term", ["collection", "term"]), // cleanup when a term is removed
 
-  filters: defineTable({
+  // Chunked inverted filter index. String/equality postings bucket docKeys by
+  // FILL ORDER under (collection, field, strVal). Numeric postings bucket docKeys
+  // by VALUE under (collection, field, valueBucket=floor(numVal/NUMERIC_BUCKET_WIDTH))
+  // so a [lo..hi] range reads only the contiguous bucket span. A row carries
+  // exactly one of strVal / numBucket (the kind is implied by the filter field type).
+  filterPostings: defineTable({
     collection: v.string(),
     field: v.string(),
-    docId: v.string(),
-    docKey: v.optional(v.number()),
     strVal: v.optional(v.string()),
-    numVal: v.optional(v.number()),
+    numBucket: v.optional(v.number()),
+    bucket: v.number(),
+    docKeys: v.array(v.number()),
   })
-    .index("by_str", ["collection", "field", "strVal"])
-    .index("by_num", ["collection", "field", "numVal"])
-    .index("by_doc", ["collection", "docId"]),
+    .index("by_str", ["collection", "field", "strVal", "bucket"])
+    .index("by_num", ["collection", "field", "numBucket", "bucket"]),
 
   facetCounts: defineTable({
     collection: v.string(),
