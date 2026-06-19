@@ -165,10 +165,16 @@ export const search = query({
     if (hasFilter) {
       const fieldTypes: Record<string, "string" | "number"> = {};
       for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
+      const pendingFilter = new Set(
+        (collection.pendingFields ?? []).filter((f) =>
+          (collection.filterFields ?? []).some((ff) => ff.field === f)),
+      );
       const resolved = await resolveAstToDocIds(
         ctx,
         args.collection,
         parseFilterAst(args.filterBy as string, fieldTypes),
+        undefined,
+        pendingFilter,
       );
       filterDocKeys = resolved.docKeys;
       filterComplete = resolved.complete;

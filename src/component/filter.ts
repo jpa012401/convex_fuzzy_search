@@ -195,25 +195,25 @@ export function parseFilter(input: string, fieldTypes: Record<string, FieldType>
 
 type ResolveResult = { ids: Set<string>; docKeys: Set<number>; truncated: boolean; complete: boolean };
 
-function keysResult(r: { docKeys: number[]; truncated: boolean }): ResolveResult {
-  return { ids: new Set<string>(), docKeys: new Set(r.docKeys), truncated: r.truncated, complete: true };
+function keysResult(r: { docKeys: number[]; truncated: boolean }, complete: boolean): ResolveResult {
+  return { ids: new Set<string>(), docKeys: new Set(r.docKeys), truncated: r.truncated, complete };
 }
 
-async function strKeys(ctx: QueryCtx, collection: string, field: string, value: string, budget: number) {
-  return keysResult(await readStringPostingDocKeys(ctx, collection, field, value, budget));
+async function strKeys(ctx: QueryCtx, collection: string, field: string, value: string, budget: number, complete: boolean) {
+  return keysResult(await readStringPostingDocKeys(ctx, collection, field, value, budget), complete);
 }
-async function numEqKeys(ctx: QueryCtx, collection: string, field: string, num: number, budget: number) {
-  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, num, num, true, true, budget));
+async function numEqKeys(ctx: QueryCtx, collection: string, field: string, num: number, budget: number, complete: boolean) {
+  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, num, num, true, true, budget), complete);
 }
-async function numCmpKeys(ctx: QueryCtx, collection: string, field: string, op: string, num: number, budget: number) {
+async function numCmpKeys(ctx: QueryCtx, collection: string, field: string, op: string, num: number, budget: number, complete: boolean) {
   const lo = op === ">" || op === ">=" ? num : Number.NEGATIVE_INFINITY;
   const hi = op === "<" || op === "<=" ? num : Number.POSITIVE_INFINITY;
   const loInclusive = op === ">=";
   const hiInclusive = op === "<=";
-  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, lo, hi, loInclusive, hiInclusive, budget));
+  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, lo, hi, loInclusive, hiInclusive, budget), complete);
 }
-async function numRangeKeys(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number, budget: number) {
-  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, lo, hi, true, true, budget));
+async function numRangeKeys(ctx: QueryCtx, collection: string, field: string, lo: number, hi: number, budget: number, complete: boolean) {
+  return keysResult(await readNumericRangeDocKeys(ctx, collection, field, lo, hi, true, true, budget), complete);
 }
 
 export async function resolveAstToDocIds(
@@ -221,19 +221,20 @@ export async function resolveAstToDocIds(
   collection: string,
   ast: Ast,
   budget: number = FILTER_RESULT_BUDGET,
+  pendingFilterFields: Set<string> = new Set(),
 ): Promise<ResolveResult> {
   switch (ast.kind) {
     case "and": {
-      const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
-      const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
+      const a = await resolveAstToDocIds(ctx, collection, ast.left, budget, pendingFilterFields);
+      const b = await resolveAstToDocIds(ctx, collection, ast.right, budget, pendingFilterFields);
       const [smallK, bigK] = a.docKeys.size <= b.docKeys.size ? [a.docKeys, b.docKeys] : [b.docKeys, a.docKeys];
       const outK = new Set<number>();
       for (const k of smallK) if (bigK.has(k)) outK.add(k);
       return { ids: new Set<string>(), docKeys: outK, truncated: a.truncated || b.truncated, complete: a.complete && b.complete };
     }
     case "or": {
-      const a = await resolveAstToDocIds(ctx, collection, ast.left, budget);
-      const b = await resolveAstToDocIds(ctx, collection, ast.right, budget);
+      const a = await resolveAstToDocIds(ctx, collection, ast.left, budget, pendingFilterFields);
+      const b = await resolveAstToDocIds(ctx, collection, ast.right, budget, pendingFilterFields);
       const outK = new Set<number>(a.docKeys);
       let truncated = a.truncated || b.truncated;
       for (const k of b.docKeys) {
@@ -242,28 +243,35 @@ export async function resolveAstToDocIds(
       }
       return { ids: new Set<string>(), docKeys: outK, truncated, complete: a.complete && b.complete };
     }
-    case "exact":
+    case "exact": {
+      const complete = !pendingFilterFields.has(ast.field);
       return ast.type === "number"
-        ? await numEqKeys(ctx, collection, ast.field, Number(ast.value), budget)
-        : await strKeys(ctx, collection, ast.field, ast.value, budget);
+        ? await numEqKeys(ctx, collection, ast.field, Number(ast.value), budget, complete)
+        : await strKeys(ctx, collection, ast.field, ast.value, budget, complete);
+    }
     case "inSet": {
+      const complete = !pendingFilterFields.has(ast.field);
       const outK = new Set<number>();
       let truncated = false;
       for (const v of ast.values) {
         const r = ast.type === "number"
-          ? await numEqKeys(ctx, collection, ast.field, Number(v), budget)
-          : await strKeys(ctx, collection, ast.field, v, budget);
+          ? await numEqKeys(ctx, collection, ast.field, Number(v), budget, complete)
+          : await strKeys(ctx, collection, ast.field, v, budget, complete);
         truncated ||= r.truncated;
         for (const k of r.docKeys) {
           if (outK.size >= budget) { truncated = true; break; }
           outK.add(k);
         }
       }
-      return { ids: new Set<string>(), docKeys: outK, truncated, complete: true };
+      return { ids: new Set<string>(), docKeys: outK, truncated, complete };
     }
-    case "cmp":
-      return await numCmpKeys(ctx, collection, ast.field, ast.op, ast.num, budget);
-    case "range":
-      return await numRangeKeys(ctx, collection, ast.field, ast.lo, ast.hi, budget);
+    case "cmp": {
+      const complete = !pendingFilterFields.has(ast.field);
+      return await numCmpKeys(ctx, collection, ast.field, ast.op, ast.num, budget, complete);
+    }
+    case "range": {
+      const complete = !pendingFilterFields.has(ast.field);
+      return await numRangeKeys(ctx, collection, ast.field, ast.lo, ast.hi, budget, complete);
+    }
   }
 }
