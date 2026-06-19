@@ -207,10 +207,14 @@ export default defineSchema({
   filterPostings: defineTable({
     collection: v.string(),
     field: v.string(),
+    // string rows: strVal set, docKeys holds the fill-bucketed docKeys.
     strVal: v.optional(v.string()),
+    docKeys: v.optional(v.array(v.number())),
+    // numeric rows: numBucket set, entries holds (docKey, num) so edge buckets
+    // can be value-filtered for a range without a separate value lookup.
     numBucket: v.optional(v.number()),
+    entries: v.optional(v.array(v.object({ docKey: v.number(), num: v.number() }))),
     bucket: v.number(),
-    docKeys: v.array(v.number()),
   })
     .index("by_str", ["collection", "field", "strVal", "bucket"])
     .index("by_num", ["collection", "field", "numBucket", "bucket"]),
