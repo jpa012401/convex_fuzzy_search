@@ -114,6 +114,24 @@ describe("matchTokens", () => {
     expect(r.scoreByIdSize).toBe(0);
   });
 
+  it("filterDocKeys intersects passing docs before resolving docIds", async () => {
+    // All three docs contain "shoe"; restrict to a single doc's docKey and assert
+    // scoreById holds exactly that one docId (the filter is applied in-matcher).
+    const t = await seeded();
+    const r = await t.run(async (ctx: any) => {
+      // docKey for docId "2" ("running shoe").
+      const row = await ctx.db
+        .query("documents")
+        .withIndex("by_collection_doc", (q: any) => q.eq("collection", "shop").eq("docId", "2"))
+        .unique();
+      const res = await matchTokens(
+        ctx, "shop", ["shoe"], undefined, undefined, new Set<number>([row.docKey]),
+      );
+      return { keys: [...res.scoreById.keys()].sort() };
+    });
+    expect(r.keys).toEqual(["2"]);
+  });
+
   it("budget cap truncates the driver scan and flags it", async () => {
     const t = await seeded();
     const r = await t.run(async (ctx: any) => {

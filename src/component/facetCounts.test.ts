@@ -92,4 +92,35 @@ describe("facetCounts helpers", () => {
       truncated: true,
     });
   });
+
+  it("stats reports filterPostings health for string and numeric filter fields", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "items",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [
+        { field: "brand", type: "string" as const },
+        { field: "price", type: "number" as const },
+      ],
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "items",
+      id: "i1",
+      doc: { name: "Widget A", brand: "Acme", price: 10 },
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "items",
+      id: "i2",
+      doc: { name: "Widget B", brand: "Beta", price: 20 },
+    });
+    const stats = await t.query(api.stats.stats, { collection: "items" });
+    const brandEntry = stats.filterPostings.find((e) => e.field === "brand");
+    const priceEntry = stats.filterPostings.find((e) => e.field === "price");
+    expect(brandEntry).toBeDefined();
+    expect(brandEntry?.totalDocKeys).toBe(2);
+    expect(priceEntry).toBeDefined();
+    expect(priceEntry?.totalDocKeys).toBe(2);
+  });
 });

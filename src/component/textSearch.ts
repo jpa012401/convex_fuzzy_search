@@ -25,6 +25,7 @@ export async function matchTokens(
   tokens: string[],
   queryBy: string[] | undefined,
   budget: number = POSTINGS_BUDGET,
+  filterDocKeys?: Set<number>,
 ): Promise<{
   scoreById: Map<string, number>;
   matchedTerms: Set<string>;
@@ -125,16 +126,24 @@ export async function matchTokens(
     if (ok) passing.push({ docKey, total });
   }
 
-  // Phase B — resolve docIds for the passing docs ONLY (same read set as the
-  // old early-exit), in parallel. Build scoreById in passing (driverScore)
-  // order so insertion order is unchanged.
+  // Intersect with the filter docKeys (if any) BEFORE resolving docIds. This
+  // both avoids any docId<->docKey remapping in the caller and shrinks Phase B's
+  // read set to just the docs that survive the filter.
+  const finalPassing = filterDocKeys
+    ? passing.filter((p) => filterDocKeys.has(p.docKey))
+    : passing;
+
+  // Phase B — resolve docIds for the passing docs ONLY (finalPassing: the
+  // filterDocKeys-intersected subset, so the read set shrinks when a filter is
+  // applied), in parallel. Build scoreById in finalPassing order so insertion
+  // order is unchanged.
   const docs = await Promise.all(
-    passing.map((p) => loadDocumentByDocKey(ctx, collection, p.docKey)),
+    finalPassing.map((p) => loadDocumentByDocKey(ctx, collection, p.docKey)),
   );
   const scoreById = new Map<string, number>();
-  for (let i = 0; i < passing.length; i++) {
+  for (let i = 0; i < finalPassing.length; i++) {
     const doc = docs[i];
-    if (doc) scoreById.set(doc.docId, passing[i].total);
+    if (doc) scoreById.set(doc.docId, finalPassing[i].total);
   }
 
   return { scoreById, matchedTerms, truncated, singleExactTerm };

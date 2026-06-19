@@ -89,6 +89,14 @@ describe("collections", () => {
         .query("facetPostings")
         .withIndex("by_collection_field_value", (q) => q.eq("collection", "products"))
         .collect(),
+      filterPostingsStr: await ctx.db
+        .query("filterPostings")
+        .withIndex("by_str", (q) => q.eq("collection", "products"))
+        .collect(),
+      filterPostingsNum: await ctx.db
+        .query("filterPostings")
+        .withIndex("by_num", (q) => q.eq("collection", "products"))
+        .collect(),
     }));
     expect(leftover.docs).toEqual([]);
     expect(leftover.docTerms).toEqual([]);
@@ -96,6 +104,8 @@ describe("collections", () => {
     expect(leftover.terms).toEqual([]);
     expect(leftover.trigrams).toEqual([]);
     expect(leftover.facetPostings).toEqual([]);
+    expect(leftover.filterPostingsStr).toEqual([]);
+    expect(leftover.filterPostingsNum).toEqual([]);
   });
 
   it("continues large collection cleanup in bounded internal batches before allowing recreate", async () => {
@@ -185,6 +195,42 @@ describe("storedFields 'derived'", () => {
     });
     const c = await t.query(api.collections.getCollection, { name: "derived" });
     expect(c?.storedFields).toBe("derived");
+  });
+});
+
+describe("numeric-only filterField deletion guard", () => {
+  it("detects index rows for a numeric-only collection and blocks re-creation", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "listings",
+      searchFields: ["title"],
+      storedFields: "all",
+      filterFields: [{ field: "price", type: "number" as const }],
+    });
+    await t.mutation(api.write.upsert, {
+      collection: "listings",
+      id: "l1",
+      doc: { title: "Laptop", price: 999 },
+    });
+
+    // Simulate deletion-in-progress: remove the collections row but leave index rows
+    await t.run(async (ctx) => {
+      const collection = await ctx.db
+        .query("collections")
+        .withIndex("by_name", (q) => q.eq("name", "listings"))
+        .unique();
+      if (!collection) throw new Error("missing collection");
+      await ctx.db.delete(collection._id);
+    });
+
+    // With only numeric filterPostings rows present, blockIfDeletionInProgress must throw
+    await expect(
+      t.mutation(api.collections.createCollection, {
+        name: "listings",
+        searchFields: ["title"],
+      }),
+    ).rejects.toThrow(/deletion in progress/);
   });
 });
 

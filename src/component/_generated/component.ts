@@ -275,6 +275,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             total: number;
             truncated: boolean;
           }>;
+          filterPostings: Array<{
+            distinctOrBuckets: number;
+            field: string;
+            totalDocKeys: number;
+          }>;
           out_of: number;
           sortSpecs: Array<{ count: number; specId: string }>;
         },

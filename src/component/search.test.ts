@@ -501,4 +501,118 @@ describe("S2 indexed filtering", () => {
       { value: "Nimbus", count: 1 },
     ]);
   });
+
+  it("filter-only numeric range returns correct found + page without loading all matches", async () => {
+    // The page-only filter branch loads ONLY the page's docs (via docKey), but
+    // `found` must report the FULL matched count, not the page size.
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "priced",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "price", type: "number" }],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "priced",
+      docs: [
+        { id: "a", doc: { name: "a", price: 40 } },
+        { id: "b", doc: { name: "b", price: 90 } },
+        { id: "c", doc: { name: "c", price: 110 } },
+        { id: "d", doc: { name: "d", price: 150 } },
+        { id: "e", doc: { name: "e", price: 300 } },
+      ],
+    });
+    const r = await t.query(api.search.search, {
+      collection: "priced", q: "", filterBy: "price:[50..150]", perPage: 2, page: 1,
+    });
+    expect(r.found).toBe(3); // 90, 110, 150 match; page returns only 2
+    expect(r.hits.length).toBe(2);
+  });
+
+  it("filter-only paging: found is the full match count over 100 matches", async () => {
+    // 100 matching docs, perPage 10 -> found 100, exactly 10 hits on the page.
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "many",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "flag", type: "string" }],
+    });
+    const docs = Array.from({ length: 100 }, (_, i) => ({
+      id: `d${String(i).padStart(3, "0")}`,
+      doc: { name: `item ${i}`, flag: "yes" },
+    }));
+    for (let i = 0; i < docs.length; i += 50) {
+      await t.mutation(api.write.upsertMany, { collection: "many", docs: docs.slice(i, i + 50) });
+    }
+    const r = await t.query(api.search.search, {
+      collection: "many", q: "", filterBy: "flag:yes", perPage: 10, page: 1,
+    });
+    expect(r.found).toBe(100);
+    expect(r.hits.length).toBe(10);
+    // Page 2 must return the NEXT 10 (disjoint from page 1), not an empty slice.
+    const r2 = await t.query(api.search.search, {
+      collection: "many", q: "", filterBy: "flag:yes", perPage: 10, page: 2,
+    });
+    expect(r2.found).toBe(100);
+    expect(r2.hits.length).toBe(10);
+    const p1 = new Set(r.hits.map((h: any) => h.id));
+    expect(r2.hits.some((h: any) => p1.has(h.id))).toBe(false);
+  });
+
+  it("filter-only paging is stable across a re-upsert (full-pagination union has no skip/dup)", async () => {
+    // Seed 200 matching docs, perPage 20 (10 pages). After reading page 1,
+    // re-upsert an early page-1 doc — its docKey moves to the tail bucket. Then
+    // page through ALL remaining pages and assert the union of every page's hits
+    // covers all 200 docs exactly once. Without the docKey-ascending sort in the
+    // filter-only branch, the shift caused by the re-upsert makes one doc skipped
+    // and another duplicated, so the union is 199, not 200.
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    await t.mutation(api.collections.createCollection, {
+      name: "stable",
+      searchFields: ["name"],
+      storedFields: "all",
+      filterFields: [{ field: "flag", type: "string" }],
+    });
+    const docs = Array.from({ length: 200 }, (_, i) => ({
+      id: `d${String(i).padStart(3, "0")}`,
+      doc: { name: `item ${i}`, flag: "yes" },
+    }));
+    for (let i = 0; i < docs.length; i += 50) {
+      await t.mutation(api.write.upsertMany, { collection: "stable", docs: docs.slice(i, i + 50) });
+    }
+    const page1 = await t.query(api.search.search, {
+      collection: "stable", q: "", filterBy: "flag:yes", perPage: 20, page: 1,
+    });
+    expect(page1.found).toBe(200);
+    expect(page1.hits.length).toBe(20);
+    // Re-upsert an early page-1 doc with identical data: remove+re-add moves its
+    // docKey to the tail bucket, shifting fill-order.
+    const target = page1.hits[2] as any;
+    const targetDoc = docs.find((d) => d.id === target.id)!;
+    await t.mutation(api.write.upsert, { collection: "stable", id: targetDoc.id, doc: targetDoc.doc });
+    // Page through everything and union the ids.
+    const seen = new Set<string>(page1.hits.map((h: any) => h.id));
+    for (let pg = 2; pg <= 10; pg++) {
+      const r = await t.query(api.search.search, {
+        collection: "stable", q: "", filterBy: "flag:yes", perPage: 20, page: pg,
+      });
+      for (const h of r.hits) seen.add((h as any).id);
+    }
+    // Stable pagination: every doc appears exactly once across all pages.
+    expect(seen.size).toBe(200);
+  });
+
+  it("filter + facet intersects via the index", async () => {
+    const t = await setupFacets();
+    const r = await t.query(api.search.search, {
+      collection: "shop", q: "", filterBy: "brand:Aurora", facetBy: ["brand"], perPage: 2,
+    });
+    expect(r.found).toBe(2);
+    expect(r.facet_counts[0].field_name).toBe("brand");
+    expect(r.facet_counts[0].counts).toEqual([{ value: "Aurora", count: 2 }]);
+  });
 });
