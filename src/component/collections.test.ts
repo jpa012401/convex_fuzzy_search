@@ -89,6 +89,14 @@ describe("collections", () => {
         .query("facetPostings")
         .withIndex("by_collection_field_value", (q) => q.eq("collection", "products"))
         .collect(),
+      filterPostingsStr: await ctx.db
+        .query("filterPostings")
+        .withIndex("by_str", (q) => q.eq("collection", "products"))
+        .collect(),
+      filterPostingsNum: await ctx.db
+        .query("filterPostings")
+        .withIndex("by_num", (q) => q.eq("collection", "products"))
+        .collect(),
     }));
     expect(leftover.docs).toEqual([]);
     expect(leftover.docTerms).toEqual([]);
@@ -96,6 +104,8 @@ describe("collections", () => {
     expect(leftover.terms).toEqual([]);
     expect(leftover.trigrams).toEqual([]);
     expect(leftover.facetPostings).toEqual([]);
+    expect(leftover.filterPostingsStr).toEqual([]);
+    expect(leftover.filterPostingsNum).toEqual([]);
   });
 
   it("continues large collection cleanup in bounded internal batches before allowing recreate", async () => {

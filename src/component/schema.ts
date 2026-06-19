@@ -115,6 +115,13 @@ export const statsResultValidator = v.object({
       distinctValues: v.number(),
     }),
   ),
+  filterPostings: v.array(
+    v.object({
+      field: v.string(),
+      totalDocKeys: v.number(),
+      distinctOrBuckets: v.number(),
+    }),
+  ),
 });
 
 export default defineSchema({
