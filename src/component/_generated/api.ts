@@ -16,6 +16,7 @@ import type * as docKeys from "../docKeys.js";
 import type * as facetCounts from "../facetCounts.js";
 import type * as facetPostings from "../facetPostings.js";
 import type * as filter from "../filter.js";
+import type * as filterPostings from "../filterPostings.js";
 import type * as fuzzy from "../fuzzy.js";
 import type * as highlight from "../highlight.js";
 import type * as http from "../http.js";
@@ -49,6 +50,7 @@ const fullApi: ApiFromModules<{
   facetCounts: typeof facetCounts;
   facetPostings: typeof facetPostings;
   filter: typeof filter;
+  filterPostings: typeof filterPostings;
   fuzzy: typeof fuzzy;
   highlight: typeof highlight;
   http: typeof http;
