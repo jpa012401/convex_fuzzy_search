@@ -137,6 +137,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             }
           >;
           searchFields: Array<string>;
+          slotMap?: {
+            numFilter: Record<string, string>;
+            search: Record<string, string>;
+            strFilter: Record<string, string>;
+          };
           sortSpecs?: Array<Array<{ field: string; order: "asc" | "desc" }>>;
           storedFields: "all" | "derived" | Array<string>;
         } | null,

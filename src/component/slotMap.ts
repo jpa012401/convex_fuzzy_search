@@ -6,7 +6,7 @@
 export type SlotMap = {
   search: Record<string, string>; // fieldName -> "textN" (text1..text8; text0 = concat, unmapped)
   strFilter: Record<string, string>; // fieldName -> "filtN" (filt0..filt7)
-  numFilter: Record<string, string>; // fieldName -> "numFN" (numF0..numF7)
+  numFilter: Record<string, string>; // fieldName -> "numFN" (numF0..numF6)
 };
 
 export type SlotConfig = {
@@ -16,7 +16,9 @@ export type SlotConfig = {
 
 // FINAL caps. search = 8 named searchFields -> text1..text8 (text0 is the
 // always-on concatenation slot and is NOT a named-field slot, so not counted).
-export const SLOT_LIMITS = { search: 8, strFilter: 8, numFilter: 8 } as const;
+// numFilter capped at 7 (not 8): a search index allows <=16 filterFields, and
+// collection(1) + strFilter(8) + numFilter(7) = 16 is the hard ceiling.
+export const SLOT_LIMITS = { search: 8, strFilter: 8, numFilter: 7 } as const;
 
 function assignCategory(
   fields: string[],

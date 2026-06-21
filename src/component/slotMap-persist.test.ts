@@ -82,11 +82,11 @@ describe("slotMap persistence (applyCollectionConfig)", () => {
     ).rejects.toThrow(/8 string filter/i);
   });
 
-  it("throws naming the numeric-filter cap when >8 numeric filter fields declared", async () => {
+  it("throws naming the numeric-filter cap when >7 numeric filter fields declared", async () => {
     const t = convexTest(schema, modules);
     registerAggregate(t, "docCount");
-    // SLOT_LIMITS.numFilter = 8; use 9 fields to exceed the cap
-    const filterFields = Array.from({ length: 9 }, (_, i) => ({
+    // SLOT_LIMITS.numFilter = 7 (search-index 16-filterField cap); use 8 to exceed it.
+    const filterFields = Array.from({ length: 8 }, (_, i) => ({
       field: `n${i}`,
       type: "number" as const,
     }));
@@ -94,7 +94,7 @@ describe("slotMap persistence (applyCollectionConfig)", () => {
       t.mutation(api.configSync.applyCollectionConfig, {
         config: { name: "p", searchFields: ["title"], storedFields: "derived", filterFields },
       }),
-    ).rejects.toThrow(/8 numeric filter/i);
+    ).rejects.toThrow(/7 numeric filter/i);
   });
 
   it("createCollection persists slotMap too", async () => {

@@ -101,8 +101,10 @@ export const facetCountValidator = v.object({
 export const FILTER_SLOTS = [
   "collection",
   "filt0", "filt1", "filt2", "filt3", "filt4", "filt5", "filt6", "filt7",
-  "numF0", "numF1", "numF2", "numF3", "numF4", "numF5", "numF6", "numF7",
+  "numF0", "numF1", "numF2", "numF3", "numF4", "numF5", "numF6",
 ] as const;
+// NOTE: Convex caps a search index at 16 filterFields. FILTER_SLOTS holds
+// collection(1) + filt0..7(8) + numF0..6(7) = 16 — the hard maximum.
 
 export const searchResultValidator = v.object({
   found: v.number(),
@@ -200,7 +202,6 @@ export default defineSchema({
     numF4: v.optional(v.number()),
     numF5: v.optional(v.number()),
     numF6: v.optional(v.number()),
-    numF7: v.optional(v.number()),
     // Stored projection returned in hits (storedFields.ts, kept).
     stored: v.any(),
   })

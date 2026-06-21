@@ -70,16 +70,16 @@ describe("assignSlots", () => {
   });
 
   it("throws naming the numeric-filter cap when too many numeric filters are declared", () => {
-    const filterFields = Array.from({ length: 9 }, (_, i) => ({
+    const filterFields = Array.from({ length: 8 }, (_, i) => ({
       field: `n${i}`,
       type: "number" as const,
     }));
     expect(() => assignSlots({ searchFields: ["title"], filterFields })).toThrow(
-      /numeric filter.*cap.*8/i,
+      /numeric filter.*cap.*7/i,
     );
   });
 
   it("exposes the FINAL caps", () => {
-    expect(SLOT_LIMITS).toEqual({ search: 8, strFilter: 8, numFilter: 8 });
+    expect(SLOT_LIMITS).toEqual({ search: 8, strFilter: 8, numFilter: 7 });
   });
 });
