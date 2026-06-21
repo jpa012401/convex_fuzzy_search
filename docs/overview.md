@@ -1,5 +1,10 @@
 # FuzzySearch — Overview
 
+> ⚠️ **Superseded for internals.** This page describes the original hand-rolled
+> inverted-index design. The component has since been rebuilt onto Convex's managed
+> `.searchIndex` — see **[TECH.md](./TECH.md)** for the current architecture, data
+> model, and limitations. The public API and result envelope are unchanged.
+
 `@elevatech/fuzzy-search` is a full-text search component for [Convex](https://convex.dev).
 It runs **entirely inside your Convex deployment** — every index is a plain Convex
 table, query, or mutation. There is no external search service to run and no sync
