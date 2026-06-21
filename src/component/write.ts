@@ -2,91 +2,55 @@ import { mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc as ConvexDoc } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
-import { applyTermDiff } from "./terms";
 import { addDoc, removeDoc } from "./counters";
 import { incrementFacet, decrementFacet } from "./facetCounts";
-import { addFacetPostings, removeFacetPostings } from "./facetPostings";
-import { addStringPosting, removeStringPosting, addNumericPosting, removeNumericPosting } from "./filterPostings";
 import { addSortEntry, removeSortEntry } from "./sortIndex";
-import type { SortKey } from "./ranking";
-import { indexRelevantFields } from "./storedFields";
-import { ensureDocKey, loadDocumentByDocId } from "./docKeys";
-import {
-  addPostingEntries,
-  deleteDocTerms,
-  loadDocTerms,
-  removePostingEntries,
-  upsertDocTerms,
-} from "./postingChunks";
-import type { DocTerm } from "./postingChunks";
+import { projectToSlots } from "./searchWrite";
 
 type Doc = Record<string, unknown>;
 export const MAX_UPSERT_MANY_BATCH = 50;
 
-function project(doc: Doc, col: ConvexDoc<"collections">): Doc {
-  const storedFields = col.storedFields;
-  if (storedFields === "all") return doc;
-  const keep = storedFields === "derived" ? indexRelevantFields(col) : storedFields;
-  const out: Doc = {};
-  for (const f of keep) {
-    if (f in doc) out[f] = doc[f];
-  }
-  return out;
+// Load the single searchDocs row for (collection, docId), or null.
+async function loadSearchDoc(ctx: MutationCtx, collection: string, docId: string) {
+  return await ctx.db
+    .query("searchDocs")
+    .withIndex("by_collection_doc", (q) =>
+      q.eq("collection", collection).eq("docId", docId),
+    )
+    .unique();
 }
 
-// Delete a doc's index rows + document row; return its distinct terms (pre-deletion).
+// Delete a doc's single searchDocs row and reverse the kept aggregate/facet-table
+// ops. Returns whether a row existed (so callers know whether to addDoc/removeDoc).
 async function clearDoc(
   ctx: MutationCtx,
   collection: string,
   docId: string,
-  facetFields: string[],
-  sortSpecs: SortKey[][],
-  filterFields: { field: string; type: "string" | "number" }[],
-): Promise<{ oldTerms: Set<string>; existed: boolean }> {
-  const existing = await loadDocumentByDocId(ctx, collection, docId);
-  const oldTermEntries = existing
-    ? await loadDocTerms(ctx, collection, existing.docKey)
-    : [];
-  const oldTerms = new Set<string>(oldTermEntries.map((p) => p.term));
-  if (existing) {
-    await removePostingEntries(ctx, collection, existing.docKey, oldTermEntries);
-    await deleteDocTerms(ctx, collection, existing.docKey);
-    const stored = existing.stored as Record<string, unknown>;
-    // Remove filterPostings for this doc's current filter field values.
-    for (const f of filterFields) {
-      const raw = stored[f.field];
-      if (raw === undefined || raw === null) continue;
-      if (f.type === "string") {
-        await removeStringPosting(ctx, collection, existing.docKey, f.field, String(raw));
-      } else {
-        const num = Number(raw);
-        if (!Number.isNaN(num)) {
-          await removeNumericPosting(ctx, collection, existing.docKey, f.field, num);
-        }
-      }
-    }
-    // Facet invariant: incrementFacet (on upsert) stringifies the RAW input
-    // value; this decrement stringifies the PROJECTED stored value. They net to
-    // zero only because every projection mode preserves facet-field values
-    // identically — keep facet fields in any explicit storedFields projection.
-    const facetPairs: { field: string; value: string }[] = [];
-    for (const field of facetFields) {
-      const raw = stored[field];
-      if (raw === undefined || raw === null) continue;
-      const value = String(raw);
-      await decrementFacet(ctx, collection, field, value);
-      facetPairs.push({ field, value });
-    }
-    await removeFacetPostings(ctx, collection, existing.docKey, facetPairs);
-    for (const spec of sortSpecs) {
-      await removeSortEntry(ctx, collection, spec, stored, docId);
-    }
-    await ctx.db.delete(existing._id);
+  col: ConvexDoc<"collections">,
+): Promise<{ existed: boolean }> {
+  const existing = await loadSearchDoc(ctx, collection, docId);
+  if (!existing) return { existed: false };
+
+  const stored = existing.stored as Record<string, unknown>;
+
+  // Facet invariant (preserved from the prior write path): incrementFacet on
+  // upsert stringifies the RAW input value; this decrement stringifies the
+  // PROJECTED stored value. They net to zero only because every projection mode
+  // preserves facet-field values identically — keep facet fields in any explicit
+  // storedFields projection.
+  for (const field of col.facetFields ?? []) {
+    const raw = stored[field];
+    if (raw === undefined || raw === null) continue;
+    await decrementFacet(ctx, collection, field, String(raw));
   }
 
-  return { oldTerms, existed: existing !== null };
+  for (const spec of col.sortSpecs ?? []) {
+    await removeSortEntry(ctx, collection, spec, stored, docId);
+  }
+
+  await ctx.db.delete(existing._id);
+  return { existed: true };
 }
 
 async function upsertInternal(
@@ -96,61 +60,30 @@ async function upsertInternal(
   doc: Doc,
 ) {
   const col = await requireCollection(ctx, collection);
-  const docKey = await ensureDocKey(ctx, collection, id);
-  const { oldTerms, existed } = await clearDoc(ctx, collection, id, col.facetFields ?? [], col.sortSpecs ?? [], col.filterFields ?? []);
+  const { existed } = await clearDoc(ctx, collection, id, col);
 
-  const newTerms = new Set<string>();
-  const termEntries: DocTerm[] = [];
-  for (const field of col.searchFields) {
-    const value = doc[field];
-    if (typeof value !== "string") continue;
-    const counts = new Map<string, number>();
-    for (const term of tokenize(value)) {
-      counts.set(term, (counts.get(term) ?? 0) + 1);
-      newTerms.add(term);
-    }
-    for (const [term, tf] of counts) {
-      termEntries.push({ term, field, tf });
-    }
-  }
-  await addPostingEntries(ctx, collection, docKey, termEntries);
-  await upsertDocTerms(ctx, collection, docKey, termEntries);
+  // ONE searchDocs row via the pure slot projection (requires col.slotMap; F9
+  // guarantees create/apply persisted it before any upsert).
+  // Cast needed: SearchDocRow uses Partial<Record<SlotKey, string|number>> (union
+  // for the shared SlotKey type) but the schema validator separates filt* (string)
+  // from numF* (number). At runtime the projection always writes the correct type.
+  const slots = projectToSlots(doc, col);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await ctx.db.insert("searchDocs", { collection, docId: id, ...slots } as any);
 
-  await ctx.db.insert("documents", {
-    collection,
-    docId: id,
-    docKey,
-    stored: project(doc, col),
-  });
-
-  for (const f of col.filterFields ?? []) {
-    const value = doc[f.field];
-    if (value === undefined || value === null) continue;
-    if (f.type === "string") {
-      await addStringPosting(ctx, collection, docKey, f.field, String(value));
-    } else {
-      const num = Number(value);
-      if (!Number.isNaN(num)) {
-        await addNumericPosting(ctx, collection, docKey, f.field, num);
-      }
-    }
-  }
-
-  const facetPairs: { field: string; value: string }[] = [];
+  // Facet counts on the facetCounts TABLE (F5) — stringify the RAW input value.
   for (const field of col.facetFields ?? []) {
     const raw = doc[field];
     if (raw === undefined || raw === null) continue;
-    const value = String(raw);
-    await incrementFacet(ctx, collection, field, value);
-    facetPairs.push({ field, value });
+    await incrementFacet(ctx, collection, field, String(raw));
   }
-  await addFacetPostings(ctx, collection, docKey, facetPairs);
 
+  // Sort aggregate entries from the (possibly projected) stored values, keyed by
+  // the raw doc — addSortEntry encodes stored via numField, matching reads.
   for (const spec of col.sortSpecs ?? []) {
     await addSortEntry(ctx, collection, spec, doc, id);
   }
 
-  await applyTermDiff(ctx, collection, oldTerms, newTerms);
   if (!existed) await addDoc(ctx, collection, id);
 }
 
@@ -168,8 +101,7 @@ export const deleteDoc = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const col = await requireCollection(ctx, args.collection);
-    const { oldTerms, existed } = await clearDoc(ctx, args.collection, args.id, col.facetFields ?? [], col.sortSpecs ?? [], col.filterFields ?? []);
-    await applyTermDiff(ctx, args.collection, oldTerms, new Set());
+    const { existed } = await clearDoc(ctx, args.collection, args.id, col);
     if (existed) await removeDoc(ctx, args.collection, args.id);
     return null;
   },
