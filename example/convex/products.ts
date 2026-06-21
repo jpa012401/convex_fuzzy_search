@@ -350,11 +350,10 @@ export const dropProducts = mutation({
 export const reindex = mutation({
   args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
   handler: async (ctx, { cursor, batch }) => {
-    // Small default batch: each replayed upsert does a clear-then-rebuild that
-    // READS the doc's whole index footprint (postingChunks/docTerms/trigrams/filters),
-    // so the per-doc read cost is far higher than a fresh insert. Batches above
-    // ~10-20 risk the 4,096-reads-per-call limit on docs with many terms.
-    const size = Math.min(batch ?? 10, MAX_COMPONENT_BATCH);
+    // Hybrid upsert writes ~1 searchDocs row + a few aggregate ops per doc, so the
+    // default page rises to MAX_COMPONENT_BATCH. PAGE SOURCE is the app's own
+    // productDocs table — the component never reads the app corpus.
+    const size = Math.min(batch ?? MAX_COMPONENT_BATCH, MAX_COMPONENT_BATCH);
     const page = await ctx.db.query("productDocs").paginate({
       numItems: size,
       cursor: cursor ?? null,

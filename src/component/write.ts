@@ -1,4 +1,5 @@
-import { mutation } from "./_generated/server";
+import { internalMutation, mutation } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc as ConvexDoc } from "./_generated/dataModel";
 import { v } from "convex/values";
@@ -9,7 +10,13 @@ import { addSortEntry, removeSortEntry } from "./sortIndex";
 import { projectToSlots } from "./searchWrite";
 
 type Doc = Record<string, unknown>;
-export const MAX_UPSERT_MANY_BATCH = 50;
+
+// Per spec §6a: the bound is on ROW WRITES, not a magic doc count. Hybrid upsert
+// writes ~1 searchDocs row + a few aggregate/facet ops per doc. Keep a generous
+// per-slice write budget under the per-mutation write limit; chain the remainder.
+const WRITES_PER_DOC = 12; // 1 searchDocs row + bounded facet/sort/aggregate ops headroom
+const UPSERT_MANY_MAX_WRITES = 3000;
+export const UPSERT_MANY_BATCH = Math.max(1, Math.floor(UPSERT_MANY_MAX_WRITES / WRITES_PER_DOC));
 
 // Load the single searchDocs row for (collection, docId), or null.
 async function loadSearchDoc(ctx: MutationCtx, collection: string, docId: string) {
@@ -114,12 +121,40 @@ export const upsertMany = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    if (args.docs.length > MAX_UPSERT_MANY_BATCH) {
-      throw new Error(`upsertMany accepts at most ${MAX_UPSERT_MANY_BATCH} documents per call`);
-    }
     await requireCollection(ctx, args.collection);
-    for (const { id, doc } of args.docs) {
+    const slice = args.docs.slice(0, UPSERT_MANY_BATCH);
+    for (const { id, doc } of slice) {
       await upsertInternal(ctx, args.collection, id, doc as Doc);
+    }
+    const rest = args.docs.slice(UPSERT_MANY_BATCH);
+    if (rest.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.write.upsertManyChain, {
+        collection: args.collection,
+        docs: rest,
+      });
+    }
+    return null;
+  },
+});
+
+export const upsertManyChain = internalMutation({
+  args: {
+    collection: v.string(),
+    docs: v.array(v.object({ id: v.string(), doc: v.any() })),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireCollection(ctx, args.collection);
+    const slice = args.docs.slice(0, UPSERT_MANY_BATCH);
+    for (const { id, doc } of slice) {
+      await upsertInternal(ctx, args.collection, id, doc as Doc);
+    }
+    const rest = args.docs.slice(UPSERT_MANY_BATCH);
+    if (rest.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.write.upsertManyChain, {
+        collection: args.collection,
+        docs: rest,
+      });
     }
     return null;
   },
