@@ -7,6 +7,7 @@ import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
 import type { Infer } from "convex/values";
 import { collectionDocValidator, rankProfileValidator, rankTermValidator, sortSpecValidator } from "./schema";
 import type { SortKey } from "./ranking";
+import { assignSlots } from "./slotMap";
 
 const DELETE_BATCH_SIZE = 25;
 const DELETE_BATCHES_PER_PUBLIC_CALL = 64;
@@ -303,6 +304,14 @@ export const createCollection = mutation({
     await blockIfDeletionInProgress(ctx, args.name);
     const storedFields = args.storedFields ?? "all";
     validateCollectionConfig({ ...args, storedFields });
+    // Assign + persist the generic-slot mapping. Deterministic + stable
+    // (first-declared field -> lowest free slot). assignSlots throws naming the
+    // cap if more fields than slots are declared.
+    // INVARIANT: createCollection must precede upsert -> every row carries a slotMap.
+    const slotMap = assignSlots({
+      searchFields: args.searchFields,
+      filterFields: args.filterFields,
+    });
     await ctx.db.insert("collections", {
       name: args.name,
       searchFields: args.searchFields,
@@ -311,6 +320,7 @@ export const createCollection = mutation({
       facetFields: args.facetFields,
       sortSpecs: args.sortSpecs,
       rankProfiles: args.rankProfiles,
+      slotMap,
     });
     return null;
   },

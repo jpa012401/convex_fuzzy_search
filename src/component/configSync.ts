@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { blockIfDeletionInProgress, loadCollection, validateCollectionConfig, requireCollection } from "./collections";
 import { diffCollection } from "./diffCollection";
 import { collectionConfigValidator } from "./schema";
+import { assignSlots } from "./slotMap";
 
 export type ApplyConfigResult = { kind: "create" | "update"; pendingFields: string[] };
 
@@ -22,6 +23,14 @@ export const applyCollectionConfig = mutation({
     // whole document, leaving the app to hydrate serving fields by id.
     const storedFields = config.storedFields ?? "derived";
     validateCollectionConfig({ ...config, storedFields });
+    // Assign + persist the generic-slot mapping. Deterministic + stable
+    // (first-declared field -> lowest free slot) so re-apply is idempotent.
+    // assignSlots throws naming the cap if more fields than slots are declared.
+    // INVARIANT: create/apply must precede upsert -> every row carries a slotMap.
+    const slotMap = assignSlots({
+      searchFields: config.searchFields,
+      filterFields: config.filterFields,
+    });
     const stored = await loadCollection(ctx, config.name);
     const next = {
       name: config.name,
@@ -31,6 +40,7 @@ export const applyCollectionConfig = mutation({
       facetFields: config.facetFields,
       sortSpecs: config.sortSpecs,
       rankProfiles: config.rankProfiles,
+      slotMap,
     };
     const diff = diffCollection(stored ? { ...stored } : null, { ...next });
     if (stored === null) {
