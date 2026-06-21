@@ -10,7 +10,7 @@ describe("searchDocs generic-slot schema", () => {
     expect(FILTER_SLOTS).toEqual([
       "collection",
       "filt0", "filt1", "filt2", "filt3", "filt4", "filt5", "filt6", "filt7",
-      "numF0", "numF1", "numF2", "numF3",
+      "numF0", "numF1", "numF2", "numF3", "numF4", "numF5", "numF6", "numF7",
     ]);
   });
 

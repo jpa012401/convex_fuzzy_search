@@ -101,7 +101,7 @@ export const facetCountValidator = v.object({
 export const FILTER_SLOTS = [
   "collection",
   "filt0", "filt1", "filt2", "filt3", "filt4", "filt5", "filt6", "filt7",
-  "numF0", "numF1", "numF2", "numF3",
+  "numF0", "numF1", "numF2", "numF3", "numF4", "numF5", "numF6", "numF7",
 ] as const;
 
 export const searchResultValidator = v.object({
@@ -197,6 +197,10 @@ export default defineSchema({
     numF1: v.optional(v.number()),
     numF2: v.optional(v.number()),
     numF3: v.optional(v.number()),
+    numF4: v.optional(v.number()),
+    numF5: v.optional(v.number()),
+    numF6: v.optional(v.number()),
+    numF7: v.optional(v.number()),
     // Stored projection returned in hits (storedFields.ts, kept).
     stored: v.any(),
   })
