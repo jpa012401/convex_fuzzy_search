@@ -136,6 +136,25 @@ search(collection, q, page, perPage<=250, queryBy?, filterBy?, facetBy?, sortBy?
 
 **Hard rule (replaces silent truncation everywhere):** any path that can exceed a bound returns an **honest flag** (`found_approximate`, or a new `order_incomplete`/`facets_scoped`), never a silently-wrong number.
 
+### 6a. Bounded-reads invariant (NO function may pull the whole collection)
+
+This is a first-class requirement, not an afterthought. **Every query/mutation must read a number of rows that is independent of collection size**, with exactly these allowed sources of "many":
+
+| Concern | Allowed cost | FORBIDDEN |
+|---|---|---|
+| Search retrieval | `.take(K)`, `K ≤ 1024` | `.collect()` on a search query (native throws past 1024 anyway) |
+| `found` / facet totals | `@convex-dev/aggregate` O(log n) node reads | tallying over the matched docs |
+| Per-page hits | `≤ perPage` (≤250) | loading the full matched set |
+| Browse / sort | aggregate `at`/`atBatch`, `≤ window` (≤1000) | scanning the collection |
+
+**The three bulk operations the spec previously left implicit — now explicit (they MUST stay paged + self-scheduling, never one-shot):**
+
+1. **`deleteCollection`** — must delete `searchDocs` rows (and clear aggregate namespaces) in **bounded batches via `ctx.scheduler.runAfter(0, ...)`**, exactly as the current `collections.ts` already does (`DELETE_BATCH_SIZE` × `DELETE_BATCHES_PER_PUBLIC_CALL`, then self-schedule the remainder). Porting this batched/self-chaining deletion is REQUIRED; a `.collect()`-then-delete is a spec violation. (One simplification vs. today: only `searchDocs` + aggregates to clear, not 8 index tables.)
+2. **Reindex / backfill** (the `pendingFields` flow after a config/slot change): the **app replays its own docs through `upsert` in bounded pages** and self-schedules the next page (the existing `example/convex/products.ts` reindex driver pattern, ~100/page). The component never reads the app's full corpus; it processes one `upsert` at a time.
+3. **`upsertMany`** — replaces fixed-50 with a batch **bounded by total row-writes, scheduler-chained** if a batch would approach the per-mutation write limit. Since hybrid writes only ~1 `searchDocs` row + a few aggregate ops per doc (vs. ~30–150 before), batches can be larger, but the bound is on *writes*, not a magic doc count.
+
+**Test obligation:** the success criteria (§7) include a test that `deleteCollection` over a collection larger than one batch completes via self-scheduling without exceeding per-call limits, and that no search/read function's read count grows with seeded collection size.
+
 ---
 
 ## 7. Success criteria
