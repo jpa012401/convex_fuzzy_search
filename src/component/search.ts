@@ -15,8 +15,8 @@ import { specMatches, canonicalSpecId, pageSortedDocIds, pageSortedDocIdsRange }
 import { evalTerms } from "./score";
 import { searchResultValidator } from "./schema";
 import type { SearchResult, Hit, FacetCount } from "./types";
-import { resolveEqFilters } from "./filterRank";
-import { runTextQuery, runEmptyQFilterQuery, reverifyAnd, synthScore, clampK, type Candidate } from "./searchRead";
+import { resolveEqFilters, resolveRankProfile } from "./filterRank";
+import { runTextQuery, runEmptyQFilterQuery, reverifyAnd, synthScore, clampK, orderCandidates, resolveFoundAndFacets, type Candidate } from "./searchRead";
 import { assignSlots } from "./slotMap";
 
 const MAX_PER_PAGE = 250;
@@ -167,10 +167,10 @@ export const search = query({
     const slotMap = collection.slotMap ?? assignSlots(collection);
     const window = Math.min(MAX_RERANK_WINDOW, Math.max(perPage, DEFAULT_RERANK_WINDOW));
 
-    // ---- TEXT PATH: native OR retrieval -> app-side AND re-verify (F2/F3/F4).
+    // ---- TEXT PATH: native OR retrieval -> app-side AND re-verify + rank/found/facets (F2/F3/F4/F5/F6).
     // NOTE: convex-test does NOT simulate native .searchIndex; this path is
     // asserted in the Task-12 smoke (npx convex run), not in vitest.
-    if (tokens.length > 0 && !hasCustomOrder && !hasFacets) {
+    if (tokens.length > 0) {
       const { eq, postFilter } = hasFilter
         ? resolveEqFilters(args.filterBy as string, slotMap, fieldTypes)
         : { eq: [], postFilter: null };
@@ -182,28 +182,59 @@ export const search = query({
         eq,
         window,
       );
-      let cands: Candidate[] = tq.candidates;
-      if (postFilter) cands = cands.filter((c) => postFilter(c.stored));
-      cands = reverifyAnd(cands, tokens);
-      const total = cands.length;
-      const found = total;
+      let candidates: Candidate[] = tq.candidates;
+      if (postFilter) candidates = candidates.filter((c) => postFilter(c.stored));
+      candidates = reverifyAnd(candidates, tokens);
       const found_approximate = tq.found_approximate;
+
+      const rankResolved = resolveRankProfile(collection, args.rank);
+      const ordered = orderCandidates(candidates, {
+        rank: rankResolved,
+        rankBy: args.rankBy,
+        sortBy: args.sortBy,
+      });
+      const total = ordered.length;
+
+      const declared = new Set(collection.facetFields ?? []);
+      const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+      const ff = await resolveFoundAndFacets(ctx, args.collection, ordered, {
+        queryPresent: tokens.length > 0,
+        facetFields: hasFacets ? (args.facetBy as string[]) : [],
+        declaredFacets: declared,
+        maxFacetValues: maxValues,
+        foundApproximate: found_approximate,
+        browseOutOf: out_of,
+      });
+      const found = ff.found;
+      let foundApprox = found_approximate;
+      // If facets were tallied over the <=K window, signal via found_approximate.
+      if (ff.facets_scoped) foundApprox = true;
+
       const pageStart = (page - 1) * perPage;
-      const ordered = [...cands].sort((a, b) => a.rankPos - b.rankPos);
       const pageCands = ordered.slice(pageStart, pageStart + perPage);
       const fields = args.queryBy ?? collection.searchFields;
       const matchTermSet = new Set(tokens);
-      const hits: Hit[] = pageCands.map((c) => {
+      const hits: Hit[] = pageCands.map((cnd) => {
         const highlight: Record<string, { snippet: string; matched_tokens: string[] }> = {};
-        for (const field of fields) {
-          const value = c.stored[field];
-          if (typeof value !== "string") continue;
-          const h = highlightField(value, matchTermSet);
-          if (h) highlight[field] = h;
+        if (matchTermSet.size > 0) {
+          for (const field of fields) {
+            const value = cnd.stored[field];
+            if (typeof value !== "string") continue;
+            const h = highlightField(value, matchTermSet);
+            if (h) highlight[field] = h;
+          }
         }
-        return { id: c.docId, score: synthScore(c.rankPos, total), highlight };
+        return { id: cnd.docId, score: synthScore(cnd.rankPos, total), highlight };
       });
-      return { found, found_approximate, reranked: true, page, out_of, hits, facet_counts: [] };
+      return {
+        found,
+        found_approximate: foundApprox,
+        reranked: true,
+        page,
+        out_of,
+        hits,
+        facet_counts: ff.facet_counts,
+      };
     }
 
     // ---- EMPTY-Q + FILTER path (F8): by_collection_doc scan + eq/postFilter,

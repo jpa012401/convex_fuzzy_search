@@ -1,6 +1,11 @@
 import { tokenize } from "./tokenizer";
 import type { QueryCtx } from "./_generated/server";
 import type { SlotMap } from "./slotMap";
+import { evalTerms, type RankContext } from "./score";
+import { orderingScore, compareMatches, type RankBy, type SortKey } from "./ranking";
+import type { RankProfile } from "./schema";
+import { readFacetCounts } from "./facetCounts";
+import type { FacetCount } from "./types";
 
 // F2: the ONE candidate type shared across read + rank + facet layers.
 // rankPos = native result index (0-based); slotText = the searched slot's raw
@@ -117,4 +122,106 @@ export async function runTextQuery(
   // extend past the <=K OR-ranked window.
   const found_approximate = rows.length >= K;
   return { candidates, searchedSlot: slot, indexName, found_approximate };
+}
+
+// F2: Order the <=K candidate window. When a rank profile is present, score each
+// candidate with evalTerms(stored, terms, weights, synthScore(rankPos,total), context)
+// and sort descending. Otherwise, use orderingScore + compareMatches (which handles
+// rankBy, sortBy, and default relevance). All ordering happens in memory.
+export function orderCandidates(
+  candidates: Candidate[],
+  opts: {
+    rank?: { profile: RankProfile; weights?: Record<string, number>; context?: RankContext };
+    rankBy?: RankBy;
+    sortBy?: SortKey[];
+  },
+): Candidate[] {
+  const total = candidates.length;
+  const out = [...candidates];
+  if (opts.rank) {
+    const { profile, weights, context } = opts.rank;
+    const ctx = context ?? {};
+    const baseIdx = new Map(out.map((cnd, i) => [cnd.docId, i])); // native-rank tiebreak
+    const score = (cnd: Candidate) =>
+      evalTerms(cnd.stored, profile.terms, weights, synthScore(cnd.rankPos, total), ctx);
+    out.sort((a, b) => score(b) - score(a) || (baseIdx.get(a.docId)! - baseIdx.get(b.docId)!));
+    return out;
+  }
+  // Relevance / rankBy / sortBy path via the kept comparator.
+  const storedOf = (id: string) => out.find((x) => x.docId === id)!.stored;
+  const relevance = (id: string) => {
+    const cnd = out.find((x) => x.docId === id)!;
+    return orderingScore(synthScore(cnd.rankPos, total), cnd.stored, opts.rankBy);
+  };
+  out.sort((a, b) =>
+    compareMatches(a.docId, b.docId, { score: relevance, stored: storedOf, sortBy: opts.sortBy }),
+  );
+  return out;
+}
+
+// F5 (query-scoped): Tally stored field values over the <=K candidate window.
+// Ordering: count desc, then value asc — matching readFacetCounts. Missing/null skipped.
+export function tallyFacets(
+  candidates: Candidate[],
+  fields: string[],
+  maxValues: number,
+): FacetCount[] {
+  const out: FacetCount[] = [];
+  for (const field of fields) {
+    const tally = new Map<string, number>();
+    for (const cnd of candidates) {
+      const raw = cnd.stored[field];
+      if (raw === undefined || raw === null) continue;
+      const value = String(raw);
+      tally.set(value, (tally.get(value) ?? 0) + 1);
+    }
+    const counts = [...tally.entries()]
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, Math.max(0, maxValues))
+      .map(([value, count]) => ({ value, count }));
+    out.push({ field_name: field, counts });
+  }
+  return out;
+}
+
+// F5/F6: Branch on queryPresent.
+//   queryPresent -> tally over the <=K candidate window (facets_scoped=true);
+//                  found = reverified candidate count.
+//   empty-q browse -> readFacetCounts over the facetCounts TABLE (facets_scoped=false);
+//                     found = browseOutOf (from the docCount aggregate).
+// Throws on any undeclared facet field (parity with existing handler in search.ts).
+export async function resolveFoundAndFacets(
+  ctx: QueryCtx,
+  collection: string,
+  candidates: Candidate[],
+  opts: {
+    queryPresent: boolean;
+    facetFields: string[];
+    declaredFacets: Set<string>;
+    maxFacetValues: number;
+    foundApproximate: boolean;
+    browseOutOf?: number;
+  },
+): Promise<{ found: number; facet_counts: FacetCount[]; facets_scoped: boolean }> {
+  for (const field of opts.facetFields) {
+    if (!opts.declaredFacets.has(field)) {
+      throw new Error(`Field "${field}" is not a declared facet field`);
+    }
+  }
+  if (opts.queryPresent) {
+    const facet_counts = tallyFacets(candidates, opts.facetFields, opts.maxFacetValues);
+    // found = reverified candidate count; found_approximate already carries the
+    // ">K" caveat (F6). facets are over the relevance-biased <=K window -> scoped.
+    return { found: candidates.length, facet_counts, facets_scoped: opts.facetFields.length > 0 };
+  }
+  // Empty-q browse/declared facets: counts from the facetCounts TABLE (F5),
+  // bounded by FACET_VALUE_READ_BUDGET (field cardinality, not collection size).
+  const facet_counts: FacetCount[] = [];
+  for (const field of opts.facetFields) {
+    facet_counts.push({
+      field_name: field,
+      counts: await readFacetCounts(ctx, collection, field, opts.maxFacetValues),
+    });
+  }
+  return { found: opts.browseOutOf ?? candidates.length, facet_counts, facets_scoped: false };
 }

@@ -4,6 +4,9 @@ import {
   synthScore,
   pickSearchSlot,
   clampK,
+  orderCandidates,
+  tallyFacets,
+  resolveFoundAndFacets,
   type Candidate,
 } from "./searchRead";
 import type { SlotMap } from "./slotMap";
@@ -127,5 +130,151 @@ describe("runEmptyQFilterQuery (F8 by_collection_doc + in-memory eq/postFilter)"
     });
     expect(r.hits.map((h: any) => h.id).sort()).toEqual(["a"]);
     expect(r.found).toBe(1);
+  });
+});
+
+// ---- Task 9: orderCandidates, tallyFacets, resolveFoundAndFacets ----
+
+const c = (docId: string, rankPos: number, stored: Record<string, unknown> = {}): Candidate => ({
+  docId, rankPos, stored, slotText: "",
+});
+
+describe("orderCandidates", () => {
+  it("no rank/rankBy/sortBy -> relevance via synthScore (native rank asc)", () => {
+    const cands = [c("a", 2), c("b", 0), c("c", 1)];
+    const out = orderCandidates(cands, {});
+    expect(out.map((x) => x.docId)).toEqual(["b", "c", "a"]);
+  });
+
+  it("rank profile uses evalTerms(stored, terms, weights, synthScore(rankPos,total), context)", () => {
+    const cands = [
+      c("a", 0, { boost: 1 }),
+      c("b", 1, { boost: 100 }),
+    ];
+    const out = orderCandidates(cands, {
+      rank: {
+        profile: { base: "default", terms: [{ id: "f", type: "field", weight: 1, field: "boost" }] },
+      },
+    });
+    // b's field contribution (100) dominates a's (1) despite worse rank.
+    expect(out.map((x) => x.docId)).toEqual(["b", "a"]);
+  });
+
+  it("sortBy on a stored numeric field overrides relevance", () => {
+    const cands = [c("a", 0, { price: 30 }), c("b", 1, { price: 10 })];
+    const out = orderCandidates(cands, { sortBy: [{ field: "price", order: "asc" }] });
+    expect(out.map((x) => x.docId)).toEqual(["b", "a"]);
+  });
+});
+
+describe("tallyFacets (query-scoped, F5)", () => {
+  it("counts stored field values over the candidate window, count desc then value asc, capped at maxValues", () => {
+    const cands = [
+      c("a", 0, { brand: "acme" }),
+      c("b", 1, { brand: "acme" }),
+      c("c", 2, { brand: "zeta" }),
+      c("d", 3, { brand: "mid" }),
+      c("e", 4, {}), // missing -> skipped
+    ];
+    const fc = tallyFacets(cands, ["brand"], 2);
+    expect(fc).toEqual([
+      { field_name: "brand", counts: [
+        { value: "acme", count: 2 },
+        { value: "mid", count: 1 },
+      ] },
+    ]);
+  });
+});
+
+describe("resolveFoundAndFacets routing (F5/F6)", () => {
+  it("queryPresent -> tallyFacets over candidates with facets_scoped=true; found=candidate count", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    registerAggregate(t, "sortIndex");
+    await t.mutation(api.collections.createCollection, {
+      name: "qf",
+      searchFields: ["name"],
+      facetFields: ["brand"],
+    });
+    const { resolveFoundAndFacets: rff } = await import("./searchRead");
+    await t.run(async (ctx: any) => {
+      const cands: Candidate[] = [
+        { docId: "a", rankPos: 0, slotText: "", stored: { brand: "acme" } },
+        { docId: "b", rankPos: 1, slotText: "", stored: { brand: "acme" } },
+      ];
+      const r = await rff(ctx, "qf", cands, {
+        queryPresent: true,
+        facetFields: ["brand"],
+        declaredFacets: new Set(["brand"]),
+        maxFacetValues: 10,
+        foundApproximate: false,
+      });
+      expect(r.found).toBe(2);
+      expect(r.facets_scoped).toBe(true);
+      expect(r.facet_counts).toEqual([
+        { field_name: "brand", counts: [{ value: "acme", count: 2 }] },
+      ]);
+    });
+  });
+
+  it("empty-q browse -> readFacetCounts over the facetCounts TABLE; facets_scoped=false", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    registerAggregate(t, "sortIndex");
+    await t.mutation(api.collections.createCollection, {
+      name: "bf",
+      searchFields: ["name"],
+      facetFields: ["brand"],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "bf",
+      docs: [
+        { id: "a", doc: { name: "x", brand: "acme" } },
+        { id: "b", doc: { name: "y", brand: "acme" } },
+        { id: "c", doc: { name: "z", brand: "zeta" } },
+      ],
+    });
+    const { resolveFoundAndFacets: rff } = await import("./searchRead");
+    await t.run(async (ctx: any) => {
+      const r = await rff(ctx, "bf", [], {
+        queryPresent: false,
+        facetFields: ["brand"],
+        declaredFacets: new Set(["brand"]),
+        maxFacetValues: 10,
+        foundApproximate: false,
+        browseOutOf: 3,
+      });
+      expect(r.facets_scoped).toBe(false);
+      expect(r.facet_counts[0].counts).toEqual([
+        { value: "acme", count: 2 },
+        { value: "zeta", count: 1 },
+      ]);
+      expect(r.found).toBe(3);
+    });
+  });
+
+  it("docCount aggregate correctly tracked: out_of and found reflect upserted doc count", async () => {
+    const t = convexTest(schema, modules);
+    registerAggregate(t, "docCount");
+    registerAggregate(t, "sortIndex");
+    await t.mutation(api.collections.createCollection, {
+      name: "counttest",
+      searchFields: ["name"],
+    });
+    await t.mutation(api.write.upsertMany, {
+      collection: "counttest",
+      docs: [
+        { id: "d1", doc: { name: "alpha" } },
+        { id: "d2", doc: { name: "beta" } },
+        { id: "d3", doc: { name: "gamma" } },
+      ],
+    });
+    // Verify out_of reflects the collectionCount aggregate (docCount gap closure)
+    const r = await t.query(api.search.search, {
+      collection: "counttest",
+      q: "",
+    });
+    expect(r.out_of).toBe(3);
+    expect(r.found).toBe(3);
   });
 });
