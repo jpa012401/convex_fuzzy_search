@@ -46,6 +46,35 @@ async function decTerm(ctx: MutationCtx, collection: string, term: string) {
 }
 
 /**
+ * Delete one bounded batch of this collection's dictionary rows (terms + trigrams).
+ * Returns true when BOTH tables are drained for the collection. Paged via .take()
+ * so it never reads proportional to vocabulary size in one call.
+ */
+export async function clearCollectionTermsBatch(
+  ctx: MutationCtx,
+  collection: string,
+  batchSize: number,
+): Promise<boolean> {
+  const terms = await ctx.db
+    .query("terms")
+    .withIndex("by_collection_term", (q) => q.eq("collection", collection))
+    .take(batchSize);
+  if (terms.length > 0) {
+    for (const r of terms) await ctx.db.delete(r._id);
+    return false;
+  }
+  const grams = await ctx.db
+    .query("trigrams")
+    .withIndex("by_collection_term", (q) => q.eq("collection", collection))
+    .take(batchSize);
+  if (grams.length > 0) {
+    for (const r of grams) await ctx.db.delete(r._id);
+    return false;
+  }
+  return true;
+}
+
+/**
  * Diff-maintain the vocabulary dictionary when a doc is inserted/updated/deleted.
  *
  * oldTerms: the set of unique tokens that were in the doc before this write.

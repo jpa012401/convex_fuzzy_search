@@ -114,4 +114,47 @@ describe("deleteCollection (single searchDocs table)", () => {
     );
     expect(facetRows.length).toBe(0);
   });
+
+  // C1: deleteCollection must drain terms + trigrams so a same-named re-created
+  // collection doesn't inherit stale vocabulary (inflated docCounts / phantom
+  // typo suggestions). Seeds 30 docs with unique terms to populate the dictionary,
+  // then asserts ZERO terms and ZERO trigrams remain after deletion is drained.
+  it("clears the terms and trigrams tables for the collection after delete", async () => {
+    const t = await setup();
+    // Seed docs with unique search text so each inserts distinct term rows.
+    for (let i = 0; i < 30; i++) {
+      await t.mutation(api.write.upsert, {
+        collection: "products",
+        id: `p${i}`,
+        doc: { name: `uniqueword${i}` },
+      });
+    }
+    // Verify terms were actually written before we delete.
+    const termsBefore = await t.run(async (ctx: any) =>
+      ctx.db
+        .query("terms")
+        .withIndex("by_collection_term", (q: any) => q.eq("collection", "products"))
+        .collect(),
+    );
+    expect(termsBefore.length).toBeGreaterThan(0);
+
+    await t.mutation(api.collections.deleteCollection, { name: "products" });
+    await t.finishAllScheduledFunctions(() => {});
+
+    const termsAfter = await t.run(async (ctx: any) =>
+      ctx.db
+        .query("terms")
+        .withIndex("by_collection_term", (q: any) => q.eq("collection", "products"))
+        .collect(),
+    );
+    expect(termsAfter.length).toBe(0);
+
+    const trigramsAfter = await t.run(async (ctx: any) =>
+      ctx.db
+        .query("trigrams")
+        .withIndex("by_collection_term", (q: any) => q.eq("collection", "products"))
+        .collect(),
+    );
+    expect(trigramsAfter.length).toBe(0);
+  });
 });

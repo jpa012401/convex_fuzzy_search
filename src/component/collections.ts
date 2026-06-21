@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { clearCollectionCount } from "./counters";
 import { clearCollectionFacets } from "./facetCounts";
 import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
+import { clearCollectionTermsBatch } from "./termDict";
 import type { Infer } from "convex/values";
 import { collectionDocValidator, rankProfileValidator, rankTermValidator, sortSpecValidator } from "./schema";
 import type { SortKey } from "./ranking";
@@ -62,7 +63,9 @@ async function deleteCollectionRowsBatch(
     for (const r of rows) await ctx.db.delete(r._id);
     return false;
   }
-  return true;
+  // searchDocs is drained; drain the vocabulary dictionary (terms + trigrams).
+  const dictDone = await clearCollectionTermsBatch(ctx, name, batchSize);
+  return dictDone;
 }
 
 async function cleanupCollectionBatchInternal(

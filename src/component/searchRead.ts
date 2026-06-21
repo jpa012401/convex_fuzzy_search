@@ -63,27 +63,32 @@ export function clampK(window: number): number {
 // browse-with-filter case we scan by_collection_doc (scoped to the collection),
 // apply the native-expressible eq() in memory + the residual postFilter, and
 // bound the read with take(). Deterministic + convex-test-runnable.
+// Returns candidates plus windowFull=true when the .take() scan hit the ceiling
+// (rows.length >= take), meaning there may be unseen matching docs — callers
+// MUST propagate this as found_approximate=true (spec §6).
 export async function runEmptyQFilterQuery(
   ctx: QueryCtx,
   collection: string,
   eq: { slot: string; value: string | number }[],
   postFilter: ((stored: Record<string, unknown>) => boolean) | null,
   take: number,
-): Promise<Candidate[]> {
+): Promise<{ candidates: Candidate[]; windowFull: boolean }> {
+  const clampedTake = Math.max(1, take);
   const rows = await ctx.db
     .query("searchDocs")
     .withIndex("by_collection_doc", (q) => q.eq("collection", collection))
-    .take(Math.max(1, take));
-  const out: Candidate[] = [];
+    .take(clampedTake);
+  const windowFull = rows.length >= clampedTake;
+  const candidates: Candidate[] = [];
   let pos = 0;
   for (const row of rows) {
     const slotsOk = eq.every((e) => (row as Record<string, unknown>)[e.slot] === e.value);
     if (!slotsOk) continue;
     const stored = (row.stored ?? {}) as Record<string, unknown>;
     if (postFilter && !postFilter(stored)) continue;
-    out.push({ docId: row.docId, stored, slotText: "", rankPos: pos++ });
+    candidates.push({ docId: row.docId, stored, slotText: "", rankPos: pos++ });
   }
-  return out;
+  return { candidates, windowFull };
 }
 
 // Native text retrieval over the slot pool. Picks the slot via pickSearchSlot:

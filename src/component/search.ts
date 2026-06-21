@@ -20,6 +20,33 @@ const DEFAULT_RERANK_WINDOW = 200;
 const MAX_RERANK_WINDOW = 1000;
 const CUSTOM_ORDER_WINDOW = DEFAULT_RERANK_WINDOW;
 
+// Tally facet counts over a candidate window. Count-desc then value-asc,
+// capped at maxValues per field. Identical semantics used in two branches of
+// the empty-q+filter path — extracted to avoid duplication.
+function tallyFacetsOverCandidates(
+  cands: Candidate[],
+  facetBy: string[],
+  declared: Set<string>,
+  maxValues: number,
+): FacetCount[] {
+  const facet_counts: FacetCount[] = [];
+  for (const field of facetBy) {
+    if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
+    const tally = new Map<string, number>();
+    for (const cnd of cands) {
+      const raw = cnd.stored[field];
+      if (raw === undefined || raw === null) continue;
+      tally.set(String(raw), (tally.get(String(raw)) ?? 0) + 1);
+    }
+    const counts = [...tally.entries()]
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, maxValues)
+      .map(([value, count]) => ({ value, count }));
+    facet_counts.push({ field_name: field, counts });
+  }
+  return facet_counts;
+}
+
 export const search = query({
   args: {
     collection: v.string(),
@@ -240,7 +267,7 @@ export const search = query({
     // For custom-order: same candidate retrieval, then re-rank in memory.
     if (tokens.length === 0 && hasFilter) {
       const { eq, postFilter } = resolveEqFilters(args.filterBy as string, slotMap, fieldTypes);
-      const cands = await runEmptyQFilterQuery(ctx, args.collection, eq, postFilter, clampK(window));
+      const { candidates: cands, windowFull } = await runEmptyQFilterQuery(ctx, args.collection, eq, postFilter, clampK(window));
       const total = cands.length;
 
       const declared = new Set(collection.facetFields ?? []);
@@ -250,23 +277,9 @@ export const search = query({
         // No custom order: resolveFoundAndFacets handles found + facets.
         // queryPresent=false -> uses facetCounts TABLE for global facets;
         // but since we have a filter, tally over the candidate window instead.
-        const facet_counts: FacetCount[] = [];
-        if (hasFacets) {
-          for (const field of args.facetBy as string[]) {
-            if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
-            const tally = new Map<string, number>();
-            for (const cnd of cands) {
-              const raw = cnd.stored[field];
-              if (raw === undefined || raw === null) continue;
-              tally.set(String(raw), (tally.get(String(raw)) ?? 0) + 1);
-            }
-            const counts = [...tally.entries()]
-              .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-              .slice(0, maxValues)
-              .map(([value, count]) => ({ value, count }));
-            facet_counts.push({ field_name: field, counts });
-          }
-        }
+        const facet_counts = hasFacets
+          ? tallyFacetsOverCandidates(cands, args.facetBy as string[], declared, maxValues)
+          : [];
         const ordered = [...cands].sort((a, b) => a.rankPos - b.rankPos);
         const pageStart = (page - 1) * perPage;
         const pageCands = ordered.slice(pageStart, pageStart + perPage);
@@ -275,7 +288,7 @@ export const search = query({
           score: synthScore(c.rankPos, total),
           highlight: {},
         }));
-        return { found: total, found_approximate: false, reranked: true, page, out_of, hits, facet_counts };
+        return { found: total, found_approximate: windowFull, reranked: true, page, out_of, hits, facet_counts };
       }
 
       // Custom order (sortBy / rankBy / rank profile) over the filter candidates.
@@ -300,23 +313,9 @@ export const search = query({
       }
 
       // Facets over the full candidate set (before page windowing).
-      const facet_counts: FacetCount[] = [];
-      if (hasFacets) {
-        for (const field of args.facetBy as string[]) {
-          if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
-          const tally = new Map<string, number>();
-          for (const cnd of cands) {
-            const raw = cnd.stored[field];
-            if (raw === undefined || raw === null) continue;
-            tally.set(String(raw), (tally.get(String(raw)) ?? 0) + 1);
-          }
-          const counts = [...tally.entries()]
-            .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-            .slice(0, maxValues)
-            .map(([value, count]) => ({ value, count }));
-          facet_counts.push({ field_name: field, counts });
-        }
-      }
+      const facet_counts = hasFacets
+        ? tallyFacetsOverCandidates(cands, args.facetBy as string[], declared, maxValues)
+        : [];
 
       const pageStart = (page - 1) * perPage;
       const pageCands = ordered.slice(pageStart, pageStart + perPage);
@@ -325,7 +324,7 @@ export const search = query({
         score: synthScore(c.rankPos, total),
         highlight: {},
       }));
-      return { found: total, found_approximate: false, reranked: true, page, out_of, hits, facet_counts };
+      return { found: total, found_approximate: windowFull, reranked: true, page, out_of, hits, facet_counts };
     }
 
     // ---- RANK BROWSE: empty q, no filter, rank profile present.
