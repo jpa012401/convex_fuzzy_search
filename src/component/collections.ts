@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { clearCollectionCount } from "./counters";
+import { clearCollectionFacets } from "./facetCounts";
 import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
 import type { Infer } from "convex/values";
 import { collectionDocValidator, rankProfileValidator, rankTermValidator, sortSpecValidator } from "./schema";
@@ -35,49 +36,11 @@ export async function requireCollection(ctx: QueryCtx, name: string) {
 }
 
 async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<boolean> {
-  const [doc, docTerm, postingChunk, docKeyCounter, term, trigram, filterPostingStr, filterPostingNum, facet, facetPosting] = await Promise.all([
-    ctx.db
-      .query("documents")
-      .withIndex("by_collection_doc", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("docTerms")
-      .withIndex("by_collection_docKey", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("postingChunks")
-      .withIndex("by_collection_term", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("docKeyCounters")
-      .withIndex("by_collection", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("terms")
-      .withIndex("by_collection_term", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("trigrams")
-      .withIndex("by_collection_term", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("filterPostings")
-      .withIndex("by_str", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("filterPostings")
-      .withIndex("by_num", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("facetCounts")
-      .withIndex("by_field", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("facetPostings")
-      .withIndex("by_collection_field_value", (q) => q.eq("collection", name))
-      .first(),
-  ]);
-  return !!(doc || docTerm || postingChunk || docKeyCounter || term || trigram || filterPostingStr || filterPostingNum || facet || facetPosting);
+  const row = await ctx.db
+    .query("searchDocs")
+    .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+    .first();
+  return !!row;
 }
 
 export async function blockIfDeletionInProgress(ctx: QueryCtx, name: string): Promise<void> {
@@ -91,96 +54,14 @@ async function deleteCollectionRowsBatch(
   name: string,
   batchSize: number,
 ): Promise<boolean> {
-  const postingChunks = await ctx.db
-    .query("postingChunks")
-    .withIndex("by_collection_term", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (postingChunks.length > 0) {
-    for (const r of postingChunks) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const docTerms = await ctx.db
-    .query("docTerms")
-    .withIndex("by_collection_docKey", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (docTerms.length > 0) {
-    for (const r of docTerms) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const documents = await ctx.db
-    .query("documents")
+  const rows = await ctx.db
+    .query("searchDocs")
     .withIndex("by_collection_doc", (q) => q.eq("collection", name))
     .take(batchSize);
-  if (documents.length > 0) {
-    for (const r of documents) await ctx.db.delete(r._id);
+  if (rows.length > 0) {
+    for (const r of rows) await ctx.db.delete(r._id);
     return false;
   }
-
-  const docKeyCounters = await ctx.db
-    .query("docKeyCounters")
-    .withIndex("by_collection", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (docKeyCounters.length > 0) {
-    for (const r of docKeyCounters) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const terms = await ctx.db
-    .query("terms")
-    .withIndex("by_collection_term", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (terms.length > 0) {
-    for (const r of terms) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const trigrams = await ctx.db
-    .query("trigrams")
-    .withIndex("by_collection_term", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (trigrams.length > 0) {
-    for (const r of trigrams) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const filterPostings = await ctx.db
-    .query("filterPostings")
-    .withIndex("by_str", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (filterPostings.length > 0) {
-    for (const r of filterPostings) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const numFilterPostings = await ctx.db
-    .query("filterPostings")
-    .withIndex("by_num", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (numFilterPostings.length > 0) {
-    for (const r of numFilterPostings) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const facets = await ctx.db
-    .query("facetCounts")
-    .withIndex("by_field", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (facets.length > 0) {
-    for (const r of facets) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const facetPostings = await ctx.db
-    .query("facetPostings")
-    .withIndex("by_collection_field_value", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (facetPostings.length > 0) {
-    for (const r of facetPostings) await ctx.db.delete(r._id);
-    return false;
-  }
-
   return true;
 }
 
@@ -195,6 +76,7 @@ async function cleanupCollectionBatchInternal(
 
   await clearCollectionCount(ctx, name);
   await clearCollectionSort(ctx, name, sortSpecs);
+  await clearCollectionFacets(ctx, name);
   const deletion = await loadDeletion(ctx, name);
   if (deletion) await ctx.db.delete(deletion._id);
   return { done: true };
