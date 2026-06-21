@@ -114,6 +114,28 @@ export const deleteDoc = mutation({
   },
 });
 
+// Shared slice-process-and-chain helper used by both upsertMany and upsertManyChain.
+// Processes up to UPSERT_MANY_BATCH docs and schedules the remainder via
+// internal.write.upsertManyChain when more docs remain.
+async function processUpsertSlice(
+  ctx: MutationCtx,
+  collection: string,
+  docs: Array<{ id: string; doc: unknown }>,
+): Promise<null> {
+  const slice = docs.slice(0, UPSERT_MANY_BATCH);
+  for (const { id, doc } of slice) {
+    await upsertInternal(ctx, collection, id, doc as Doc);
+  }
+  const rest = docs.slice(UPSERT_MANY_BATCH);
+  if (rest.length > 0) {
+    await ctx.scheduler.runAfter(0, internal.write.upsertManyChain, {
+      collection,
+      docs: rest,
+    });
+  }
+  return null;
+}
+
 export const upsertMany = mutation({
   args: {
     collection: v.string(),
@@ -122,18 +144,7 @@ export const upsertMany = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireCollection(ctx, args.collection);
-    const slice = args.docs.slice(0, UPSERT_MANY_BATCH);
-    for (const { id, doc } of slice) {
-      await upsertInternal(ctx, args.collection, id, doc as Doc);
-    }
-    const rest = args.docs.slice(UPSERT_MANY_BATCH);
-    if (rest.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.write.upsertManyChain, {
-        collection: args.collection,
-        docs: rest,
-      });
-    }
-    return null;
+    return processUpsertSlice(ctx, args.collection, args.docs);
   },
 });
 
@@ -145,18 +156,7 @@ export const upsertManyChain = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireCollection(ctx, args.collection);
-    const slice = args.docs.slice(0, UPSERT_MANY_BATCH);
-    for (const { id, doc } of slice) {
-      await upsertInternal(ctx, args.collection, id, doc as Doc);
-    }
-    const rest = args.docs.slice(UPSERT_MANY_BATCH);
-    if (rest.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.write.upsertManyChain, {
-        collection: args.collection,
-        docs: rest,
-      });
-    }
-    return null;
+    return processUpsertSlice(ctx, args.collection, args.docs);
   },
 });
 

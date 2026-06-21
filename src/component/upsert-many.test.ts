@@ -56,4 +56,26 @@ describe("upsertMany (write-bounded, scheduler-chained)", () => {
       t.mutation(api.write.upsertMany, { collection: "products", docs }),
     ).resolves.toBeNull();
   });
+
+  it("chains upsertManyChain for batches exceeding UPSERT_MANY_BATCH and writes all rows", async () => {
+    // UPSERT_MANY_BATCH = floor(3000/12) = 250. Using 260 docs forces exactly one
+    // chain continuation (first slice: 250 docs; remainder: 10 docs via
+    // upsertManyChain). This exercises the self-scheduling path that the 120-doc
+    // and 51-doc tests miss.
+    const N = 260;
+    const t = await setup();
+    const docs = Array.from({ length: N }, (_, i) => ({
+      id: `chain${i}`,
+      doc: { name: `item ${i}` },
+    }));
+    await t.mutation(api.write.upsertMany, { collection: "products", docs });
+    // Yield to the macrotask queue so the setTimeout(fn, 0) from runAfter(0, ...)
+    // fires and registers the scheduled function as in-flight before
+    // finishAllScheduledFunctions checks anyFunctionsRunning().
+    await new Promise((r) => setTimeout(r, 10));
+    // Drain all scheduled continuations until the queue is empty.
+    await t.finishAllScheduledFunctions(() => {});
+    // All 260 searchDocs rows must exist — proving upsertManyChain ran.
+    expect(await searchDocCount(t)).toBe(N);
+  });
 });
