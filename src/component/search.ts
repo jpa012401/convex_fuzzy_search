@@ -12,7 +12,7 @@ import { evalTerms } from "./score";
 import { searchResultValidator } from "./schema";
 import type { SearchResult, Hit, FacetCount } from "./types";
 import { resolveEqFilters, resolveRankProfile } from "./filterRank";
-import { runTextQuery, runEmptyQFilterQuery, reverifyAnd, synthScore, clampK, orderCandidates, resolveFoundAndFacets, loadStored, type Candidate } from "./searchRead";
+import { runTextQuery, runEmptyQFilterQuery, reverifyAnd, synthScore, clampK, orderCandidates, resolveFoundAndFacets, loadStored, suggestCorrectTokens, type Candidate } from "./searchRead";
 import { assignSlots } from "./slotMap";
 
 const MAX_PER_PAGE = 250;
@@ -158,7 +158,30 @@ export const search = query({
       let candidates: Candidate[] = tq.candidates;
       if (postFilter) candidates = candidates.filter((c) => postFilter(c.stored));
       candidates = reverifyAnd(candidates, tokens);
-      const found_approximate = tq.found_approximate;
+      let found_approximate = tq.found_approximate;
+
+      // ON-MISS TYPO CORRECTION (Task 15): if the AND-verified candidate set is
+      // empty, attempt to correct each query token via the trigram dictionary and
+      // re-run native search with the corrected query. Typo'd queries ("runing
+      // shoe") are never sent to the index — correction fires on miss only.
+      if (candidates.length === 0 && tokens.length > 0) {
+        const correctedTokens = await suggestCorrectTokens(ctx, args.collection, tokens);
+        if (correctedTokens !== null) {
+          const correctedQ = correctedTokens.join(" ");
+          const tqRetry = await runTextQuery(
+            ctx,
+            { name: args.collection, searchFields: collection.searchFields },
+            { q: correctedQ, queryBy: args.queryBy },
+            slotMap,
+            eq,
+            window,
+          );
+          let retryCandidates: Candidate[] = tqRetry.candidates;
+          if (postFilter) retryCandidates = retryCandidates.filter((c) => postFilter(c.stored));
+          candidates = reverifyAnd(retryCandidates, correctedTokens);
+          if (tqRetry.found_approximate) found_approximate = true;
+        }
+      }
 
       const rankResolved = resolveRankProfile(collection, args.rank);
       const ordered = orderCandidates(candidates, {

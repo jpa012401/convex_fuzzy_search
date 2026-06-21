@@ -211,4 +211,21 @@ export default defineSchema({
     .index("by_field", ["collection", "field"]) // enumerate all values for a field
     .index("by_value", ["collection", "field", "value"]), // locate the row to ++/--
 
+  // Vocabulary-scale trigram dictionary for typo correction (suggest-then-search).
+  // terms: ref-counted per (collection, term); docCount tracks how many docs contain the term.
+  // trigrams: one row per (collection, gram, term) for O(grams) query-time lookup.
+  terms: defineTable({
+    collection: v.string(),
+    term: v.string(),
+    docCount: v.number(),
+  }).index("by_collection_term", ["collection", "term"]),
+
+  trigrams: defineTable({
+    collection: v.string(),
+    gram: v.string(),
+    term: v.string(),
+  })
+    .index("by_collection_gram", ["collection", "gram"])
+    .index("by_collection_term", ["collection", "term"]),
+
 });

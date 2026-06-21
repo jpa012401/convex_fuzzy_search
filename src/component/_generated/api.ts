@@ -27,6 +27,7 @@ import type * as slotMap from "../slotMap.js";
 import type * as sortIndex from "../sortIndex.js";
 import type * as stats from "../stats.js";
 import type * as storedFields from "../storedFields.js";
+import type * as termDict from "../termDict.js";
 import type * as tokenizer from "../tokenizer.js";
 import type * as types from "../types.js";
 import type * as write from "../write.js";
@@ -58,6 +59,7 @@ const fullApi: ApiFromModules<{
   sortIndex: typeof sortIndex;
   stats: typeof stats;
   storedFields: typeof storedFields;
+  termDict: typeof termDict;
   tokenizer: typeof tokenizer;
   types: typeof types;
   write: typeof write;

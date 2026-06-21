@@ -8,6 +8,8 @@ import { addDoc, removeDoc } from "./counters";
 import { incrementFacet, decrementFacet } from "./facetCounts";
 import { addSortEntry, removeSortEntry } from "./sortIndex";
 import { projectToSlots } from "./searchWrite";
+import { tokenize } from "./tokenizer";
+import { applyTermDiff } from "./termDict";
 
 type Doc = Record<string, unknown>;
 
@@ -29,15 +31,16 @@ async function loadSearchDoc(ctx: MutationCtx, collection: string, docId: string
 }
 
 // Delete a doc's single searchDocs row and reverse the kept aggregate/facet-table
-// ops. Returns whether a row existed (so callers know whether to addDoc/removeDoc).
+// ops. Returns whether a row existed and the set of vocabulary terms from the
+// prior row (so callers can pass them to applyTermDiff).
 async function clearDoc(
   ctx: MutationCtx,
   collection: string,
   docId: string,
   col: ConvexDoc<"collections">,
-): Promise<{ existed: boolean }> {
+): Promise<{ existed: boolean; oldTerms: Set<string> }> {
   const existing = await loadSearchDoc(ctx, collection, docId);
-  if (!existing) return { existed: false };
+  if (!existing) return { existed: false, oldTerms: new Set() };
 
   const stored = existing.stored as Record<string, unknown>;
 
@@ -56,8 +59,13 @@ async function clearDoc(
     await removeSortEntry(ctx, collection, spec, stored, docId);
   }
 
+  // Collect the vocabulary terms from the existing row. text0 is the
+  // concatenation of all searchFields — tokenizing it gives the full per-doc
+  // term set without needing the raw doc.
+  const oldTerms = new Set(tokenize(String(existing.text0 ?? "")));
+
   await ctx.db.delete(existing._id);
-  return { existed: true };
+  return { existed: true, oldTerms };
 }
 
 async function upsertInternal(
@@ -67,7 +75,7 @@ async function upsertInternal(
   doc: Doc,
 ) {
   const col = await requireCollection(ctx, collection);
-  const { existed } = await clearDoc(ctx, collection, id, col);
+  const { existed, oldTerms } = await clearDoc(ctx, collection, id, col);
 
   // ONE searchDocs row via the pure slot projection (requires col.slotMap; F9
   // guarantees create/apply persisted it before any upsert).
@@ -91,6 +99,17 @@ async function upsertInternal(
     await addSortEntry(ctx, collection, spec, doc, id);
   }
 
+  // Maintain vocabulary dictionary. Compute newTerms from the searchFields text.
+  // Tokenize each searchField value from the raw doc and union the results.
+  const newTerms = new Set<string>();
+  for (const field of col.searchFields) {
+    const val = doc[field];
+    if (typeof val === "string") {
+      for (const tok of tokenize(val)) newTerms.add(tok);
+    }
+  }
+  await applyTermDiff(ctx, collection, oldTerms, newTerms);
+
   if (!existed) await addDoc(ctx, collection, id);
 }
 
@@ -108,8 +127,11 @@ export const deleteDoc = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const col = await requireCollection(ctx, args.collection);
-    const { existed } = await clearDoc(ctx, args.collection, args.id, col);
-    if (existed) await removeDoc(ctx, args.collection, args.id);
+    const { existed, oldTerms } = await clearDoc(ctx, args.collection, args.id, col);
+    if (existed) {
+      await applyTermDiff(ctx, args.collection, oldTerms, new Set());
+      await removeDoc(ctx, args.collection, args.id);
+    }
     return null;
   },
 });

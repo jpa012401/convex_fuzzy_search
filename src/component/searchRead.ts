@@ -1,6 +1,7 @@
 import { tokenize } from "./tokenizer";
 import type { QueryCtx } from "./_generated/server";
 import type { SlotMap } from "./slotMap";
+import { suggestTerms } from "./termDict";
 import { evalTerms, type RankContext } from "./score";
 import { orderingScore, compareMatches, type RankBy, type SortKey } from "./ranking";
 import type { RankProfile } from "./schema";
@@ -196,6 +197,30 @@ export function tallyFacets(
     out.push({ field_name: field, counts });
   }
   return out;
+}
+
+// ON-MISS TYPO CORRECTION (Task 15): if a text query returns zero results after
+// reverifyAnd, try to correct each token via the trigram dictionary and return
+// the corrected token list. Returns null when no correction was found (so the
+// caller can skip the retry). Testable in convex-test (reads trigrams table
+// only; does NOT call native .searchIndex).
+export async function suggestCorrectTokens(
+  ctx: QueryCtx,
+  collection: string,
+  tokens: string[],
+): Promise<string[] | null> {
+  const corrected: string[] = [];
+  let anyChanged = false;
+  for (const token of tokens) {
+    const suggestions = await suggestTerms(ctx, collection, token);
+    if (suggestions.length > 0 && suggestions[0] !== token) {
+      corrected.push(suggestions[0]);
+      anyChanged = true;
+    } else {
+      corrected.push(token);
+    }
+  }
+  return anyChanged ? corrected : null;
 }
 
 // F5/F6: Branch on queryPresent.
