@@ -15,6 +15,9 @@ import { specMatches, canonicalSpecId, pageSortedDocIds, pageSortedDocIdsRange }
 import { evalTerms } from "./score";
 import { searchResultValidator } from "./schema";
 import type { SearchResult, Hit, FacetCount } from "./types";
+import { resolveEqFilters } from "./filterRank";
+import { runTextQuery, runEmptyQFilterQuery, reverifyAnd, synthScore, clampK, type Candidate } from "./searchRead";
+import { assignSlots } from "./slotMap";
 
 const MAX_PER_PAGE = 250;
 const DEFAULT_RERANK_WINDOW = 200;
@@ -158,13 +161,76 @@ export const search = query({
       }
     }
 
+    // ---- Derive field types for resolveEqFilters (needed by Task-8 paths).
+    const fieldTypes: Record<string, "string" | "number"> = {};
+    for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
+    const slotMap = collection.slotMap ?? assignSlots(collection);
+    const window = Math.min(MAX_RERANK_WINDOW, Math.max(perPage, DEFAULT_RERANK_WINDOW));
+
+    // ---- TEXT PATH: native OR retrieval -> app-side AND re-verify (F2/F3/F4).
+    // NOTE: convex-test does NOT simulate native .searchIndex; this path is
+    // asserted in the Task-12 smoke (npx convex run), not in vitest.
+    if (tokens.length > 0 && !hasCustomOrder && !hasFacets) {
+      const { eq, postFilter } = hasFilter
+        ? resolveEqFilters(args.filterBy as string, slotMap, fieldTypes)
+        : { eq: [], postFilter: null };
+      const tq = await runTextQuery(
+        ctx,
+        { name: args.collection, searchFields: collection.searchFields },
+        { q: args.q, queryBy: args.queryBy },
+        slotMap,
+        eq,
+        window,
+      );
+      let cands: Candidate[] = tq.candidates;
+      if (postFilter) cands = cands.filter((c) => postFilter(c.stored));
+      cands = reverifyAnd(cands, tokens);
+      const total = cands.length;
+      const found = total;
+      const found_approximate = tq.found_approximate;
+      const pageStart = (page - 1) * perPage;
+      const ordered = [...cands].sort((a, b) => a.rankPos - b.rankPos);
+      const pageCands = ordered.slice(pageStart, pageStart + perPage);
+      const fields = args.queryBy ?? collection.searchFields;
+      const matchTermSet = new Set(tokens);
+      const hits: Hit[] = pageCands.map((c) => {
+        const highlight: Record<string, { snippet: string; matched_tokens: string[] }> = {};
+        for (const field of fields) {
+          const value = c.stored[field];
+          if (typeof value !== "string") continue;
+          const h = highlightField(value, matchTermSet);
+          if (h) highlight[field] = h;
+        }
+        return { id: c.docId, score: synthScore(c.rankPos, total), highlight };
+      });
+      return { found, found_approximate, reranked: true, page, out_of, hits, facet_counts: [] };
+    }
+
+    // ---- EMPTY-Q + FILTER path (F8): by_collection_doc scan + eq/postFilter,
+    // bounded take. Deterministic + convex-test-runnable.
+    // Only handles the no-custom-order, no-facets case; others fall through to
+    // the legacy branches below (rank-browse, browse+custom remain intact).
+    if (tokens.length === 0 && hasFilter && !hasCustomOrder && !hasFacets) {
+      const { eq, postFilter } = resolveEqFilters(args.filterBy as string, slotMap, fieldTypes);
+      const cands = await runEmptyQFilterQuery(ctx, args.collection, eq, postFilter, clampK(window));
+      const total = cands.length;
+      const found = total;
+      const pageStart = (page - 1) * perPage;
+      const ordered = [...cands].sort((a, b) => a.rankPos - b.rankPos);
+      const pageCands = ordered.slice(pageStart, pageStart + perPage);
+      const hits: Hit[] = pageCands.map((c) => ({
+        id: c.docId,
+        score: synthScore(c.rankPos, total),
+        highlight: {},
+      }));
+      return { found, found_approximate: false, reranked: true, page, out_of, hits, facet_counts: [] };
+    }
+
     // ---- Resolve filter to a docKey set via the bucketed index, if present.
     let filterDocKeys: Set<number> | null = null;
     let filterComplete = false;
     let filterTruncated = false;
     if (hasFilter) {
-      const fieldTypes: Record<string, "string" | "number"> = {};
-      for (const f of collection.filterFields ?? []) fieldTypes[f.field] = f.type;
       const pendingFilter = new Set(
         (collection.pendingFields ?? []).filter((f) =>
           (collection.filterFields ?? []).some((ff) => ff.field === f)),
