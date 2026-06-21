@@ -159,6 +159,20 @@ export function orderCandidates(
   return out;
 }
 
+// Load a single doc's stored projection from searchDocs (used by browse/rank branches
+// that need stored fields from searchDocs instead of the removed documents table).
+export async function loadStored(
+  ctx: QueryCtx,
+  collection: string,
+  docId: string,
+): Promise<Record<string, unknown>> {
+  const row = await ctx.db
+    .query("searchDocs")
+    .withIndex("by_collection_doc", (q) => q.eq("collection", collection).eq("docId", docId))
+    .unique();
+  return (row?.stored ?? {}) as Record<string, unknown>;
+}
+
 // F5 (query-scoped): Tally stored field values over the <=K candidate window.
 // Ordering: count desc, then value asc — matching readFacetCounts. Missing/null skipped.
 export function tallyFacets(

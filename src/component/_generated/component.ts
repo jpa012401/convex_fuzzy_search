@@ -269,21 +269,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { collection: string },
         {
-          facetPostings: Array<{
-            distinctValues: number;
-            field: string;
-            totalDocKeys: number;
-          }>;
           facets: Array<{
             distinctValues: number;
             field: string;
             total: number;
             truncated: boolean;
-          }>;
-          filterPostings: Array<{
-            distinctOrBuckets: number;
-            field: string;
-            totalDocKeys: number;
           }>;
           out_of: number;
           sortSpecs: Array<{ count: number; specId: string }>;

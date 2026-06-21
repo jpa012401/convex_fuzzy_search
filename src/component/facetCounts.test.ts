@@ -93,7 +93,7 @@ describe("facetCounts helpers", () => {
     });
   });
 
-  it("stats reports filterPostings health for string and numeric filter fields", async () => {
+  it("stats reports out_of and sortSpecs for a collection with filter fields", async () => {
     const t = convexTest(schema, modules);
     registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
@@ -116,11 +116,8 @@ describe("facetCounts helpers", () => {
       doc: { name: "Widget B", brand: "Beta", price: 20 },
     });
     const stats = await t.query(api.stats.stats, { collection: "items" });
-    const brandEntry = stats.filterPostings.find((e) => e.field === "brand");
-    const priceEntry = stats.filterPostings.find((e) => e.field === "price");
-    expect(brandEntry).toBeDefined();
-    expect(brandEntry?.totalDocKeys).toBe(2);
-    expect(priceEntry).toBeDefined();
-    expect(priceEntry?.totalDocKeys).toBe(2);
+    expect(stats.out_of).toBe(2);
+    expect(stats.sortSpecs).toEqual([]);
+    expect(stats.facets).toEqual([]);
   });
 });

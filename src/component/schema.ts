@@ -127,20 +127,6 @@ export const statsResultValidator = v.object({
     }),
   ),
   sortSpecs: v.array(v.object({ specId: v.string(), count: v.number() })),
-  facetPostings: v.array(
-    v.object({
-      field: v.string(),
-      totalDocKeys: v.number(),
-      distinctValues: v.number(),
-    }),
-  ),
-  filterPostings: v.array(
-    v.object({
-      field: v.string(),
-      totalDocKeys: v.number(),
-      distinctOrBuckets: v.number(),
-    }),
-  ),
 });
 
 export default defineSchema({
@@ -216,81 +202,6 @@ export default defineSchema({
     .searchIndex("s7", { searchField: "text7", filterFields: [...FILTER_SLOTS] })
     .searchIndex("s8", { searchField: "text8", filterFields: [...FILTER_SLOTS] }),
 
-  documents: defineTable({
-    collection: v.string(),
-    docId: v.string(),
-    docKey: v.number(),
-    stored: v.any(), // projected fields returned in hits
-  })
-    .index("by_collection_doc", ["collection", "docId"])
-    .index("by_collection_docKey", ["collection", "docKey"]),
-
-  docKeyCounters: defineTable({
-    collection: v.string(),
-    nextDocKey: v.number(),
-  }).index("by_collection", ["collection"]),
-
-  docTerms: defineTable({
-    collection: v.string(),
-    docKey: v.number(),
-    terms: v.array(
-      v.object({
-        term: v.string(),
-        field: v.string(),
-        tf: v.number(),
-      }),
-    ),
-  }).index("by_collection_docKey", ["collection", "docKey"]),
-
-  postingChunks: defineTable({
-    collection: v.string(),
-    term: v.string(),
-    bucket: v.number(),
-    entries: v.array(
-      v.object({
-        docKey: v.number(),
-        field: v.string(),
-        tf: v.number(),
-      }),
-    ),
-  })
-    .index("by_collection_term", ["collection", "term"])
-    .index("by_collection_term_bucket", ["collection", "term", "bucket"]),
-
-  terms: defineTable({
-    collection: v.string(),
-    term: v.string(),
-    docCount: v.number(), // number of docs in the collection containing this term
-  }).index("by_collection_term", ["collection", "term"]),
-
-  trigrams: defineTable({
-    collection: v.string(),
-    gram: v.string(),
-    term: v.string(),
-  })
-    .index("by_collection_gram", ["collection", "gram"]) // fuzzy candidate lookup
-    .index("by_collection_term", ["collection", "term"]), // cleanup when a term is removed
-
-  // Chunked inverted filter index. String/equality postings bucket docKeys by
-  // FILL ORDER under (collection, field, strVal). Numeric postings bucket docKeys
-  // by VALUE under (collection, field, valueBucket=floor(numVal/NUMERIC_BUCKET_WIDTH))
-  // so a [lo..hi] range reads only the contiguous bucket span. A row carries
-  // exactly one of strVal / numBucket (the kind is implied by the filter field type).
-  filterPostings: defineTable({
-    collection: v.string(),
-    field: v.string(),
-    // string rows: strVal set, docKeys holds the fill-bucketed docKeys.
-    strVal: v.optional(v.string()),
-    docKeys: v.optional(v.array(v.number())),
-    // numeric rows: numBucket set, entries holds (docKey, num) so edge buckets
-    // can be value-filtered for a range without a separate value lookup.
-    numBucket: v.optional(v.number()),
-    entries: v.optional(v.array(v.object({ docKey: v.number(), num: v.number() }))),
-    bucket: v.number(),
-  })
-    .index("by_str", ["collection", "field", "strVal", "bucket"])
-    .index("by_num", ["collection", "field", "numBucket", "bucket"]),
-
   facetCounts: defineTable({
     collection: v.string(),
     field: v.string(),
@@ -300,13 +211,4 @@ export default defineSchema({
     .index("by_field", ["collection", "field"]) // enumerate all values for a field
     .index("by_value", ["collection", "field", "value"]), // locate the row to ++/--
 
-  facetPostings: defineTable({
-    collection: v.string(),
-    field: v.string(),
-    value: v.string(),
-    bucket: v.number(),
-    docKeys: v.array(v.number()),
-  })
-    .index("by_collection_field_value", ["collection", "field", "value"])
-    .index("by_collection_field_value_bucket", ["collection", "field", "value", "bucket"]),
 });

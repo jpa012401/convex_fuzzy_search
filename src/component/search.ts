@@ -3,49 +3,22 @@ import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { tokenize } from "./tokenizer";
 import { requireCollection } from "./collections";
-import { matchTokens } from "./textSearch";
-import { loadDocumentByDocKey } from "./docKeys";
-import { parseFilterAst, resolveAstToDocIds } from "./filter";
 import { highlightField } from "./highlight";
 import { orderingScore, compareMatches } from "./ranking";
 import { collectionCount, pageDocIds } from "./counters";
-import { readFacetCounts, facetValuesForField } from "./facetCounts";
-import { readFacetPostingDocKeys } from "./facetPostings";
+import { readFacetCounts } from "./facetCounts";
 import { specMatches, canonicalSpecId, pageSortedDocIds, pageSortedDocIdsRange } from "./sortIndex";
 import { evalTerms } from "./score";
 import { searchResultValidator } from "./schema";
 import type { SearchResult, Hit, FacetCount } from "./types";
 import { resolveEqFilters, resolveRankProfile } from "./filterRank";
-import { runTextQuery, runEmptyQFilterQuery, reverifyAnd, synthScore, clampK, orderCandidates, resolveFoundAndFacets, type Candidate } from "./searchRead";
+import { runTextQuery, runEmptyQFilterQuery, reverifyAnd, synthScore, clampK, orderCandidates, resolveFoundAndFacets, loadStored, type Candidate } from "./searchRead";
 import { assignSlots } from "./slotMap";
 
 const MAX_PER_PAGE = 250;
 const DEFAULT_RERANK_WINDOW = 200;
 const MAX_RERANK_WINDOW = 1000;
 const CUSTOM_ORDER_WINDOW = DEFAULT_RERANK_WINDOW;
-
-// Load only the named docs (bounded by ids.length, not the collection).
-async function loadDocs(
-  ctx: QueryCtx,
-  collection: string,
-  ids: string[],
-): Promise<Map<string, unknown>> {
-  const byId = new Map<string, unknown>();
-  const rows = await Promise.all(
-    ids.map((id) =>
-      ctx.db
-        .query("documents")
-        .withIndex("by_collection_doc", (q) =>
-          q.eq("collection", collection).eq("docId", id),
-        )
-        .unique(),
-    ),
-  );
-  rows.forEach((row, i) => {
-    if (row) byId.set(ids[i], row.stored);
-  });
-  return byId;
-}
 
 export const search = query({
   args: {
@@ -239,290 +212,224 @@ export const search = query({
 
     // ---- EMPTY-Q + FILTER path (F8): by_collection_doc scan + eq/postFilter,
     // bounded take. Deterministic + convex-test-runnable.
-    // Only handles the no-custom-order, no-facets case; others fall through to
-    // the legacy branches below (rank-browse, browse+custom remain intact).
-    if (tokens.length === 0 && hasFilter && !hasCustomOrder && !hasFacets) {
+    // Handles ALL filter cases (with/without facets, with/without custom order).
+    // For no-custom-order: runEmptyQFilterQuery + resolveFoundAndFacets covers everything.
+    // For custom-order: same candidate retrieval, then re-rank in memory.
+    if (tokens.length === 0 && hasFilter) {
       const { eq, postFilter } = resolveEqFilters(args.filterBy as string, slotMap, fieldTypes);
       const cands = await runEmptyQFilterQuery(ctx, args.collection, eq, postFilter, clampK(window));
       const total = cands.length;
-      const found = total;
+
+      const declared = new Set(collection.facetFields ?? []);
+      const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+
+      if (!hasCustomOrder) {
+        // No custom order: resolveFoundAndFacets handles found + facets.
+        // queryPresent=false -> uses facetCounts TABLE for global facets;
+        // but since we have a filter, tally over the candidate window instead.
+        const facet_counts: FacetCount[] = [];
+        if (hasFacets) {
+          for (const field of args.facetBy as string[]) {
+            if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
+            const tally = new Map<string, number>();
+            for (const cnd of cands) {
+              const raw = cnd.stored[field];
+              if (raw === undefined || raw === null) continue;
+              tally.set(String(raw), (tally.get(String(raw)) ?? 0) + 1);
+            }
+            const counts = [...tally.entries()]
+              .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+              .slice(0, maxValues)
+              .map(([value, count]) => ({ value, count }));
+            facet_counts.push({ field_name: field, counts });
+          }
+        }
+        const ordered = [...cands].sort((a, b) => a.rankPos - b.rankPos);
+        const pageStart = (page - 1) * perPage;
+        const pageCands = ordered.slice(pageStart, pageStart + perPage);
+        const hits: Hit[] = pageCands.map((c) => ({
+          id: c.docId,
+          score: synthScore(c.rankPos, total),
+          highlight: {},
+        }));
+        return { found: total, found_approximate: false, reranked: true, page, out_of, hits, facet_counts };
+      }
+
+      // Custom order (sortBy / rankBy / rank profile) over the filter candidates.
+      const rankResolved = resolveRankProfile(collection, args.rank);
+      let ordered: Candidate[];
+
+      if (hasRank) {
+        const windowSize = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile!.window ?? DEFAULT_RERANK_WINDOW)));
+        const baseIdx = new Map(cands.map((c, i) => [c.docId, i]));
+        const ctxRank = args.rank!.context ?? {};
+        const rawScore = (cnd: Candidate) => synthScore(cnd.rankPos, total);
+        const score = (cnd: Candidate) =>
+          evalTerms(cnd.stored, rankProfile!.terms, args.rank!.weights, rawScore(cnd), ctxRank);
+        const scored = [...cands].sort((a, b) => score(b) - score(a) || (baseIdx.get(a.docId)! - baseIdx.get(b.docId)!));
+        ordered = scored.slice(0, windowSize);
+      } else {
+        ordered = orderCandidates(cands, {
+          rank: rankResolved,
+          rankBy: args.rankBy,
+          sortBy: args.sortBy,
+        });
+      }
+
+      // Facets over the full candidate set (before page windowing).
+      const facet_counts: FacetCount[] = [];
+      if (hasFacets) {
+        for (const field of args.facetBy as string[]) {
+          if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
+          const tally = new Map<string, number>();
+          for (const cnd of cands) {
+            const raw = cnd.stored[field];
+            if (raw === undefined || raw === null) continue;
+            tally.set(String(raw), (tally.get(String(raw)) ?? 0) + 1);
+          }
+          const counts = [...tally.entries()]
+            .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+            .slice(0, maxValues)
+            .map(([value, count]) => ({ value, count }));
+          facet_counts.push({ field_name: field, counts });
+        }
+      }
+
       const pageStart = (page - 1) * perPage;
-      const ordered = [...cands].sort((a, b) => a.rankPos - b.rankPos);
       const pageCands = ordered.slice(pageStart, pageStart + perPage);
       const hits: Hit[] = pageCands.map((c) => ({
         id: c.docId,
         score: synthScore(c.rankPos, total),
         highlight: {},
       }));
-      return { found, found_approximate: false, reranked: true, page, out_of, hits, facet_counts: [] };
+      return { found: total, found_approximate: false, reranked: true, page, out_of, hits, facet_counts };
     }
 
-    // ---- Resolve filter to a docKey set via the bucketed index, if present.
-    let filterDocKeys: Set<number> | null = null;
-    let filterComplete = false;
-    let filterTruncated = false;
-    if (hasFilter) {
-      const pendingFilter = new Set(
-        (collection.pendingFields ?? []).filter((f) =>
-          (collection.filterFields ?? []).some((ff) => ff.field === f)),
-      );
-      const resolved = await resolveAstToDocIds(
-        ctx,
-        args.collection,
-        parseFilterAst(args.filterBy as string, fieldTypes),
-        undefined,
-        pendingFilter,
-      );
-      filterDocKeys = resolved.docKeys;
-      filterComplete = resolved.complete;
-      filterTruncated = resolved.truncated;
-    }
-    // The full matched count (before paging). The page-only filter branch loads
-    // only one page of docs, so `matchedIds.length` is NOT the total — use this.
-    const filterMatchCount = filterDocKeys ? filterDocKeys.size : null;
-
-    // ---- Build the working set (byId) + match ids + scores.
-    let matchedIds: string[];
-    let scoreById: Map<string, number> | null = null;
-    const matchedTerms = new Set<string>();
-    let byId: Map<string, unknown>;
-    let truncated = false;
-    let windowTruncated = false;
-    let singleExactTerm: string | null = null;
-    let reranked = true;
-    let deferredPageLoad = false;
-    // The filter-only page-only branch resolves docIds for just this page (in
-    // docKey order), so `matchedIds` already IS the page — the downstream page
-    // slice must take it whole rather than re-slicing at pageStart.
-    let filterPageOnly = false;
-
-    if (tokens.length > 0) {
-      // TEXT PATH: driver-token intersection (bounded). The filter docKeys are
-      // intersected INSIDE matchTokens (before its docId resolution), so
-      // scoreById comes back already narrowed to docs matching BOTH.
-      const m = await matchTokens(
-        ctx,
-        args.collection,
-        tokens,
-        args.queryBy,
-        undefined,
-        filterDocKeys ?? undefined,
-      );
-      scoreById = m.scoreById;
-      for (const term of m.matchedTerms) matchedTerms.add(term);
-      truncated = m.truncated;
-      singleExactTerm = m.singleExactTerm;
-      matchedIds = [...scoreById.keys()];
-      // Only facet tallying and stored-field ordering (rankBy/sortBy/rank) need
-      // the WHOLE matched set's stored docs. Plain relevance-ordered text search
-      // needs stored docs for the page only (highlighting), and orders by the
-      // relevance score alone — so defer to a bounded page-load below and avoid
-      // loading every matched doc (which can exceed the per-query read limit).
-      if (hasFacets || hasCustomOrder) {
-        byId = await loadDocs(ctx, args.collection, matchedIds);
-      } else {
-        byId = new Map<string, unknown>();
-        deferredPageLoad = true;
-      }
-    } else if (filterDocKeys) {
-      // FILTER-ONLY PATH: work in docKeys; resolve docIds only for the docs we
-      // actually need. Facets via the inverted index need no docs; only custom
-      // ordering (or a facet request that can't use the index) needs the full set.
-      const keys = [...filterDocKeys].sort((a, b) => a - b);
-      const facetsNeedDocs = hasFacets && !(filterDocKeys && filterComplete);
-      byId = new Map<string, unknown>();
-      matchedIds = [];
-      if (!facetsNeedDocs && !hasCustomOrder) {
-        // page-only: map just this page's docKeys -> documents. matchedIds then
-        // holds only this page (in docKey order), so flag it for the page slice.
-        filterPageOnly = true;
-        const pageStart = (page - 1) * perPage;
-        const pageKeys = keys.slice(pageStart, pageStart + perPage);
-        const rows = await Promise.all(
-          pageKeys.map((k) => loadDocumentByDocKey(ctx, args.collection, k)),
-        );
-        for (const row of rows) {
-          if (!row) continue;
-          matchedIds.push(row.docId);
-          byId.set(row.docId, row.stored);
-        }
-        // `found` is the full matched set (filterMatchCount), not just the page.
-      } else {
-        // map ALL matched docKeys -> documents (for facet tally / custom order).
-        const rows = await Promise.all(
-          keys.map((k) => loadDocumentByDocKey(ctx, args.collection, k)),
-        );
-        for (const row of rows) {
-          if (!row) continue;
-          matchedIds.push(row.docId);
-          byId.set(row.docId, row.stored);
-        }
-      }
-    } else if (hasRank) {
-      // RANK BROWSE: candidate window off the profile's base sortSpec (batched).
-      const windowSize = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile!.window ?? DEFAULT_RERANK_WINDOW)));
-      matchedIds = await pageSortedDocIdsRange(ctx, args.collection, rankProfile!.base, windowSize);
-      byId = await loadDocs(ctx, args.collection, matchedIds);
-    } else {
-      // BROWSE + custom-order but NO filter: rank a bounded aggregate window
-      // instead of loading the whole collection before pagination.
-      matchedIds = await pageDocIds(ctx, args.collection, 0, CUSTOM_ORDER_WINDOW);
-      windowTruncated = out_of > matchedIds.length;
-      byId = await loadDocs(ctx, args.collection, matchedIds);
-    }
-
-    const storedOf = (id: string) => (byId.get(id) ?? {}) as Record<string, unknown>;
-
-    // `found` is the materialized-candidate count. When `found_approximate` is
-    // true (driver scan truncated), it is a FLOOR, not the exact total — only
-    // the single-exact-term / no-filter / no-queryBy case is corrected to the
-    // exact terms.docCount below.
-    // The filter-only branch may put only one page in matchedIds; report the
-    // FULL filter match count instead. The text path's matchedIds is already the
-    // complete text∩filter set, so it must use matchedIds.length (not the full
-    // filter size). Hence only override `found` when there is no text query.
-    let found =
-      tokens.length === 0 && filterMatchCount !== null
-        ? filterMatchCount
-        : matchedIds.length;
-    let found_approximate = filterTruncated || windowTruncated;
-    if (truncated) {
-      found_approximate = true;
-      // terms.docCount counts the term across ALL searchFields, so it is only an
-      // exact total when the query is not narrowed by a filter or queryBy.
-      if (singleExactTerm && !filterDocKeys && !args.queryBy) {
-        const termRow = await ctx.db
-          .query("terms")
-          .withIndex("by_collection_term", (q) =>
-            q.eq("collection", args.collection).eq("term", singleExactTerm as string),
-          )
-          .unique();
-        if (termRow) found = termRow.docCount;
-      }
-    }
-    if (hasRank && tokens.length === 0 && !filterDocKeys) {
-      found = out_of;
-    }
-    if (windowTruncated && tokens.length === 0 && !filterDocKeys) {
-      found = out_of;
-    }
-
-    const facetIds = matchedIds; // full matched/candidate set, before any rank windowing
-    const rawScore = (id: string) => (scoreById ? (scoreById.get(id) ?? 0) : 0);
+    // ---- RANK BROWSE: empty q, no filter, rank profile present.
+    // Candidate window off the profile's base sortSpec (batched).
     if (hasRank) {
       const windowSize = Math.min(MAX_RERANK_WINDOW, Math.max(1, Math.floor(rankProfile!.window ?? DEFAULT_RERANK_WINDOW)));
-      // Order before windowing: browse = base order (already), text = relevance desc,
-      // filter-only = arbitrary matched-set order.
-      let ordered = matchedIds;
-      if (tokens.length > 0) {
-        ordered = [...matchedIds].sort((a, b) => rawScore(b) - rawScore(a) || (a < b ? -1 : a > b ? 1 : 0));
-      }
-      if (ordered.length > windowSize) {
-        ordered = ordered.slice(0, windowSize);
+      const baseIds = await pageSortedDocIdsRange(ctx, args.collection, rankProfile!.base, windowSize);
+      const total = baseIds.length;
+      let reranked = true;
+
+      // Load stored docs for rank scoring.
+      const storedMap = new Map<string, Record<string, unknown>>();
+      await Promise.all(baseIds.map(async (id) => {
+        storedMap.set(id, await loadStored(ctx, args.collection, id));
+      }));
+      const storedOf = (id: string) => storedMap.get(id) ?? {};
+
+      const ctxRank = args.rank!.context ?? {};
+      const rawScore = (id: string, rankPos: number) => synthScore(rankPos, total);
+      const score = (id: string, rankPos: number) =>
+        evalTerms(storedOf(id), rankProfile!.terms, args.rank!.weights, rawScore(id, rankPos), ctxRank);
+
+      // Score the window.
+      const baseIdx = new Map(baseIds.map((id, i) => [id, i]));
+      let scoredIds = [...baseIds].sort((a, b) => {
+        const ai = baseIdx.get(a)!;
+        const bi = baseIdx.get(b)!;
+        return score(b, bi) - score(a, ai) || (ai - bi);
+      });
+      if (scoredIds.length > windowSize) {
+        scoredIds = scoredIds.slice(0, windowSize);
         reranked = false;
       }
-      const baseIdx = new Map(ordered.map((id, i) => [id, i]));
-      const ctxRank = args.rank!.context ?? {};
-      const score = (id: string) =>
-        evalTerms(storedOf(id), rankProfile!.terms, args.rank!.weights, rawScore(id), ctxRank);
-      matchedIds = [...ordered].sort((a, b) => score(b) - score(a) || (baseIdx.get(a)! - baseIdx.get(b)!));
-    } else if (!filterPageOnly) {
-      // filterPageOnly already holds the page in docKey order; re-sorting it here
-      // would scramble that page-local order (and only the page is loaded), so skip.
-      const orderScore = (id: string) => orderingScore(rawScore(id), storedOf(id), args.rankBy);
-      matchedIds.sort((a, b) =>
-        compareMatches(a, b, { score: orderScore, stored: storedOf, sortBy: args.sortBy }),
-      );
-    }
 
-    const facet_counts: FacetCount[] = [];
-    if (hasFacets) {
-      const declared = new Set(collection.facetFields ?? []);
-      const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
-      const globalFacets = hasRank && tokens.length === 0 && !filterDocKeys;
-      for (const field of args.facetBy as string[]) {
-        if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
-        if (globalFacets) {
+      // Facets (global from facetCounts TABLE since no filter).
+      const facet_counts: FacetCount[] = [];
+      if (hasFacets) {
+        const declared = new Set(collection.facetFields ?? []);
+        const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+        for (const field of args.facetBy as string[]) {
+          if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
           facet_counts.push({ field_name: field, counts: await readFacetCounts(ctx, args.collection, field, maxValues) });
-          continue;
         }
-        if (tokens.length === 0 && filterDocKeys && filterComplete) {
-          const values = await facetValuesForField(ctx, args.collection, field);
-          const counts: { value: string; count: number }[] = [];
-          for (const value of values) {
-            const postArr = await readFacetPostingDocKeys(ctx, args.collection, field, value);
-            const post = new Set<number>(postArr);
-            const [small, big] = post.size <= filterDocKeys.size ? [post, filterDocKeys] : [filterDocKeys, post];
-            let n = 0;
-            for (const k of small) if (big.has(k)) n++;
-            if (n > 0) counts.push({ value, count: n });
-          }
-          counts.sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
-          facet_counts.push({ field_name: field, counts: counts.slice(0, maxValues) });
-          continue;
-        }
-        const tally = new Map<string, number>();
-        for (const id of facetIds) {
-          const raw = storedOf(id)[field];
-          if (raw === undefined || raw === null) continue;
-          const value = String(raw);
-          tally.set(value, (tally.get(value) ?? 0) + 1);
-        }
-        const counts = [...tally.entries()]
-          .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-          .slice(0, maxValues)
-          .map(([value, count]) => ({ value, count }));
-        facet_counts.push({ field_name: field, counts });
       }
-    }
 
-    const pageStart = (page - 1) * perPage;
-    let pageIds: string[];
-    if (hasRank && tokens.length === 0 && !filterDocKeys) {
-      const windowPart = matchedIds.slice(pageStart, pageStart + perPage);
-      if (pageStart + perPage > matchedIds.length) {
-        // page extends past the re-ranked window -> fill from plain base order
-        const tailStart = Math.max(pageStart, matchedIds.length);
+      const pageStart = (page - 1) * perPage;
+      let pageIds: string[];
+      const windowPart = scoredIds.slice(pageStart, pageStart + perPage);
+      if (pageStart + perPage > scoredIds.length) {
+        // Page extends past the re-ranked window -> fill from plain base order.
+        const tailStart = Math.max(pageStart, scoredIds.length);
         const need = perPage - windowPart.length;
         const tail = need > 0
           ? await pageSortedDocIds(ctx, args.collection, rankProfile!.base, tailStart, need)
           : [];
         if (tail.length > 0) {
-          const tailById = await loadDocs(ctx, args.collection, tail);
-          for (const [k, val] of tailById) byId.set(k, val);
+          await Promise.all(tail.map(async (id) => {
+            if (!storedMap.has(id)) storedMap.set(id, await loadStored(ctx, args.collection, id));
+          }));
           reranked = false;
         }
         pageIds = [...windowPart, ...tail];
       } else {
         pageIds = windowPart;
       }
-    } else if (filterPageOnly) {
-      // matchedIds already IS this page (loaded at pageStart in docKey order).
-      pageIds = matchedIds;
-    } else {
-      pageIds = matchedIds.slice(pageStart, pageStart + perPage);
+
+      const hits: Hit[] = pageIds.map((id) => ({
+        id,
+        score: 0,
+        highlight: {},
+      }));
+      return { found: out_of, found_approximate: false, reranked, page, out_of, hits, facet_counts };
     }
-    // Deferred page-load: the text path with no facets/custom order skipped the
-    // full matched-set load above; fetch just this page's stored docs now (for
-    // highlighting). byId is otherwise already populated.
-    if (deferredPageLoad && pageIds.length > 0) {
-      byId = await loadDocs(ctx, args.collection, pageIds);
-    }
-    const fields = args.queryBy ?? collection.searchFields;
-    const hits: Hit[] = pageIds.map((id) => {
-      const stored = storedOf(id);
-      const highlight: Record<string, { snippet: string; matched_tokens: string[] }> = {};
-      if (matchedTerms.size > 0) {
-        for (const field of fields) {
-          const value = stored[field];
-          if (typeof value !== "string") continue;
-          const h = highlightField(value, matchedTerms);
-          if (h) highlight[field] = h;
+
+    // ---- BROWSE + custom-order but NO filter, NO rank profile:
+    // rankBy or sortBy over a bounded aggregate window.
+    {
+      const windowIds = await pageDocIds(ctx, args.collection, 0, CUSTOM_ORDER_WINDOW);
+      const windowTruncated = out_of > windowIds.length;
+
+      // Load stored docs for ordering.
+      const storedMap = new Map<string, Record<string, unknown>>();
+      await Promise.all(windowIds.map(async (id) => {
+        storedMap.set(id, await loadStored(ctx, args.collection, id));
+      }));
+      const storedOf = (id: string) => storedMap.get(id) ?? {};
+
+      const total = windowIds.length;
+      const cands: Candidate[] = windowIds.map((id, i) => ({
+        docId: id,
+        stored: storedOf(id),
+        slotText: "",
+        rankPos: i,
+      }));
+
+      const ordered = orderCandidates(cands, {
+        rankBy: args.rankBy,
+        sortBy: args.sortBy,
+      });
+
+      // Facets (global from facetCounts TABLE since no filter).
+      const facet_counts: FacetCount[] = [];
+      if (hasFacets) {
+        const declared = new Set(collection.facetFields ?? []);
+        const maxValues = Math.max(0, Math.floor(args.maxFacetValues ?? 10));
+        for (const field of args.facetBy as string[]) {
+          if (!declared.has(field)) throw new Error(`Field "${field}" is not a declared facet field`);
+          facet_counts.push({ field_name: field, counts: await readFacetCounts(ctx, args.collection, field, maxValues) });
         }
       }
-      return { id, score: rawScore(id), highlight };
-    });
 
-    return { found, found_approximate, reranked, page, out_of, hits, facet_counts };
+      const pageStart = (page - 1) * perPage;
+      const pageCands = ordered.slice(pageStart, pageStart + perPage);
+      const hits: Hit[] = pageCands.map((c) => ({
+        id: c.docId,
+        score: synthScore(c.rankPos, total),
+        highlight: {},
+      }));
+      return {
+        found: windowTruncated ? out_of : total,
+        found_approximate: windowTruncated,
+        reranked: true,
+        page,
+        out_of,
+        hits,
+        facet_counts,
+      };
+    }
   },
 });

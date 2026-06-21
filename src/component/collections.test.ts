@@ -45,7 +45,7 @@ describe("collections", () => {
     ).toBeNull();
   });
 
-  it("deleteCollection removes the collection, its documents, posting chunks, terms, and trigrams", async () => {
+  it("deleteCollection removes the collection and its searchDocs rows", async () => {
     const t = convexTest(schema, modules);
     registerAggregate(t, "docCount");
     await t.mutation(api.collections.createCollection, {
@@ -65,47 +65,17 @@ describe("collections", () => {
       await t.query(api.collections.getCollection, { name: "products" }),
     ).toBeNull();
     const leftover = await t.run(async (ctx) => ({
-      docs: await ctx.db
-        .query("documents")
+      searchDocs: await ctx.db
+        .query("searchDocs")
         .withIndex("by_collection_doc", (q) => q.eq("collection", "products"))
         .collect(),
-      docTerms: await ctx.db
-        .query("docTerms")
-        .withIndex("by_collection_docKey", (q) => q.eq("collection", "products"))
-        .collect(),
-      postingChunks: await ctx.db
-        .query("postingChunks")
-        .withIndex("by_collection_term", (q) => q.eq("collection", "products"))
-        .collect(),
-      terms: await ctx.db
-        .query("terms")
-        .withIndex("by_collection_term", (q) => q.eq("collection", "products"))
-        .collect(),
-      trigrams: await ctx.db
-        .query("trigrams")
-        .withIndex("by_collection_term", (q) => q.eq("collection", "products"))
-        .collect(),
-      facetPostings: await ctx.db
-        .query("facetPostings")
-        .withIndex("by_collection_field_value", (q) => q.eq("collection", "products"))
-        .collect(),
-      filterPostingsStr: await ctx.db
-        .query("filterPostings")
-        .withIndex("by_str", (q) => q.eq("collection", "products"))
-        .collect(),
-      filterPostingsNum: await ctx.db
-        .query("filterPostings")
-        .withIndex("by_num", (q) => q.eq("collection", "products"))
+      facetCounts: await ctx.db
+        .query("facetCounts")
+        .withIndex("by_field", (q) => q.eq("collection", "products"))
         .collect(),
     }));
-    expect(leftover.docs).toEqual([]);
-    expect(leftover.docTerms).toEqual([]);
-    expect(leftover.postingChunks).toEqual([]);
-    expect(leftover.terms).toEqual([]);
-    expect(leftover.trigrams).toEqual([]);
-    expect(leftover.facetPostings).toEqual([]);
-    expect(leftover.filterPostingsStr).toEqual([]);
-    expect(leftover.filterPostingsNum).toEqual([]);
+    expect(leftover.searchDocs).toEqual([]);
+    expect(leftover.facetCounts).toEqual([]);
   });
 
   it("continues large collection cleanup in bounded internal batches before allowing recreate", async () => {
@@ -224,7 +194,7 @@ describe("numeric-only filterField deletion guard", () => {
       await ctx.db.delete(collection._id);
     });
 
-    // With only numeric filterPostings rows present, blockIfDeletionInProgress must throw
+    // With searchDocs rows still present, blockIfDeletionInProgress must throw
     await expect(
       t.mutation(api.collections.createCollection, {
         name: "listings",
