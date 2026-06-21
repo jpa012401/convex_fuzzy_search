@@ -52,6 +52,53 @@ describe("deleteCollection (single searchDocs table)", () => {
     expect(col).toBeNull();
   });
 
+  // DELETE_BATCH_SIZE=25 * DELETE_BATCHES_PER_PUBLIC_CALL=64 = 1600 rows per
+  // public deleteCollection call. Seeding 1650 rows forces the scheduler
+  // self-scheduling continuation path (ctx.scheduler.runAfter) to fire — the
+  // most important part of bounded deletion that the 60-row test misses.
+  it("crosses the 1600-row public-call boundary and completes via self-scheduled continuation", async () => {
+    const SEED_COUNT = 1650;
+    const t = await setup();
+
+    // Insert searchDocs rows directly to avoid 1650 full upsert mutations.
+    // Split into two t.run batches to keep individual transactions reasonable.
+    const half = Math.ceil(SEED_COUNT / 2);
+    await t.run(async (ctx: any) => {
+      for (let i = 0; i < half; i++) {
+        await ctx.db.insert("searchDocs", {
+          collection: "products",
+          docId: `bulk${i}`,
+          stored: {},
+        });
+      }
+    });
+    await t.run(async (ctx: any) => {
+      for (let i = half; i < SEED_COUNT; i++) {
+        await ctx.db.insert("searchDocs", {
+          collection: "products",
+          docId: `bulk${i}`,
+          stored: {},
+        });
+      }
+    });
+    expect(await searchDocCount(t)).toBe(SEED_COUNT);
+
+    // deleteCollection handles up to 1600 rows inline; remaining 50 rows are
+    // cleaned up via ctx.scheduler.runAfter -> internal.collections.cleanupCollectionBatch.
+    await t.mutation(api.collections.deleteCollection, { name: "products" });
+    // Yield to the macrotask queue so the setTimeout(fn, 0) from runAfter(0, ...)
+    // fires and registers the scheduled function as in-flight before
+    // finishAllScheduledFunctions checks anyFunctionsRunning().
+    await new Promise((r) => setTimeout(r, 10));
+    // finishAllScheduledFunctions drains all scheduled continuations until
+    // the queue is empty, exercising the self-scheduling path.
+    await t.finishAllScheduledFunctions(() => {});
+
+    expect(await searchDocCount(t)).toBe(0);
+    const col = await t.query(api.collections.getCollection, { name: "products" });
+    expect(col).toBeNull();
+  });
+
   it("clears the facetCounts table for the collection", async () => {
     const t = await setup();
     for (let i = 0; i < 30; i++) {
