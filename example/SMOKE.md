@@ -226,6 +226,56 @@ Error: CollectionNotFound: "products"
 
 ---
 
+## Step 9 — Native Search Features (prefix, typo, highlight): LIVE-ONLY
+
+These behaviors require native Convex full-text search and cannot be tested via `vitest` / `convex-test`.
+They are `it.skip`'d in `src/component/search.test.ts` with a reference to this section.
+
+### 9a — Prefix search-as-you-type
+
+```
+npx convex run products:searchProducts '{"q":"runnin"}'
+```
+
+**Expected:** `found >= 1`, hits include "Aurora Running Shoe" and "Aurora Trail Shoe" (prefix "runnin" matches "running").
+Confirms native prefix expands the last token.
+
+### 9b — Prefix only applies to last token
+
+```
+npx convex run products:searchProducts '{"q":"shoe runnin"}'
+```
+
+**Expected:** `found >= 1` (both "shoe" and prefix "runnin" match Aurora Running Shoe, after AND re-verify).
+
+```
+npx convex run products:searchProducts '{"q":"runnin shoe"}'
+```
+
+**Expected:** `found == 0` (prefix only on last token — "shoe" is exact, "runnin" is not the last token, so no prefix expansion for it; "runnin" exact-matches nothing).
+
+### 9c — Typo tolerance (native fuzzy matching)
+
+```
+npx convex run products:searchProducts '{"q":"runing"}'
+```
+
+**Expected:** `found >= 1` — native search tolerates 1 edit ("runing" → "running").
+
+```
+npx convex run products:searchProducts '{"q":"runnixx"}'
+```
+
+**Expected:** `found == 0` — 2+ edits from "running" exceeds the native typo budget.
+
+### 9d — Prefix query highlights the expanded term
+
+```
+npx convex run products:searchProducts '{"q":"runnin"}'
+```
+
+**Expected:** in the returned hit's `highlight.name.snippet`, the matched token is wrapped as `<mark>Running</mark>` (the full expanded word, not just the prefix "runnin").
+
 ## Summary
 
 | Step | Description | Result |
@@ -239,6 +289,10 @@ Error: CollectionNotFound: "products"
 | 6 | Update product; re-search confirms change | PASS |
 | 7 | Delete product; re-search confirms gone | PASS |
 | 8 | dropProducts; indexStats throws CollectionNotFound | PASS |
+| 9a | Prefix search-as-you-type | live-only |
+| 9b | Prefix applies only to last token | live-only |
+| 9c | Typo tolerance (within budget / exceeds budget) | live-only |
+| 9d | Prefix query highlights expanded term | live-only |
 
 **Bug found:** `filterPostings` table retains stale rows after `deleteCollection` because `cleanupCollectionBatchInternal` does not clear `filterPostings`. The new write path (`write.ts` rewrite, commit e7098e0) no longer writes to `filterPostings`, leaving it as dead stale data that the legacy `resolveAstToDocIds` read path still consults for empty-q + filter + facet queries.
 

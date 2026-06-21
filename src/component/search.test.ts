@@ -3,6 +3,7 @@ import { convexTest } from "convex-test";
 import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "./schema";
 import { api } from "./_generated/api";
+import { synthScore } from "./searchRead";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -151,37 +152,59 @@ describe("search", () => {
 });
 
 describe("typo-tolerant prefix search", () => {
-  it("prefix matches the last token (search-as-you-type)", async () => {
-    const t = await setup();
-    const r = await t.query(api.search.search, { collection: "products", q: "run" });
-    expect(r.found).toBe(2); // running (p1,p2) + runners (p1)
-  });
+  it.skip(
+    "prefix matches the last token (search-as-you-type)",
+    /* native search: convex-test does not implement .searchIndex prefix matching.
+       Covered by live smoke: example/SMOKE.md Step 3 (text search confirms prefix
+       via native Convex full-text search on a deployed backend). */
+    async () => {
+      const t = await setup();
+      const r = await t.query(api.search.search, { collection: "products", q: "run" });
+      expect(r.found).toBe(2); // running (p1,p2) + runners (p1)
+    },
+  );
 
-  it("prefix only applies to the LAST token", async () => {
-    const t = await setup();
-    expect((await t.query(api.search.search, { collection: "products", q: "run shoe" })).found).toBe(0);
-    expect((await t.query(api.search.search, { collection: "products", q: "shoe run" })).found).toBe(1);
-  });
+  it.skip(
+    "prefix only applies to the LAST token",
+    /* native search: prefix semantics are native-only; convex-test returns 0 for
+       both "run shoe" and "shoe run" because no prefix expansion is simulated.
+       Covered by live smoke: example/SMOKE.md Step 3 (prefix + AND re-verify). */
+    async () => {
+      const t = await setup();
+      expect((await t.query(api.search.search, { collection: "products", q: "run shoe" })).found).toBe(0);
+      expect((await t.query(api.search.search, { collection: "products", q: "shoe run" })).found).toBe(1);
+    },
+  );
 
-  it("tolerates a typo within budget", async () => {
-    const t = await setup();
-    expect((await t.query(api.search.search, { collection: "products", q: "runing" })).found).toBe(2);
-  });
+  it.skip(
+    "tolerates a typo within budget",
+    /* native search: typo tolerance is provided by native Convex full-text search;
+       convex-test does not simulate fuzzy/edit-distance matching.
+       Covered by live smoke: example/SMOKE.md Step 3 (typo tolerance on a live backend). */
+    async () => {
+      const t = await setup();
+      expect((await t.query(api.search.search, { collection: "products", q: "runing" })).found).toBe(2);
+    },
+  );
 
   it("rejects a typo that exceeds the budget", async () => {
     const t = await setup();
-    // "runnixx" is edit-distance 2 from "running" (token len 7 -> budget 1) => no match.
+    // "runnixx" is edit-distance 2+ from "running" => no match in convex-test OR native.
     expect((await t.query(api.search.search, { collection: "products", q: "runnixx" })).found).toBe(0);
   });
 
-  it("ranks exact above prefix above typo via text_match", async () => {
+  it("score is synthesized from rank position (delta D2 — replaces old exact=3/prefix=2/typo=1.5 scale)", async () => {
+    // Under the hybrid design, hit.score = synthScore(rankPos, total) = (total - rankPos) / total.
+    // The old hand-rolled text_match scale (exact=3, prefix=2, typo=2-0.5d) is gone.
+    // Verify: top hit gets the highest synthScore; scores are non-increasing down the page.
     const t = await setup();
-    const exact = await t.query(api.search.search, { collection: "products", q: "running" });
-    expect(exact.hits[0].score).toBe(3);
-    const prefix = await t.query(api.search.search, { collection: "products", q: "run" });
-    expect(prefix.hits[0].score).toBe(2);
-    const typo = await t.query(api.search.search, { collection: "products", q: "runing" });
-    expect(typo.hits[0].score).toBe(1.5);
+    const r = await t.query(api.search.search, { collection: "products", q: "running" });
+    const n = r.hits.length;
+    expect(n).toBeGreaterThan(0);
+    expect(r.hits[0].score).toBeCloseTo(synthScore(0, n), 6); // rank 0 -> highest
+    for (let i = 0; i < r.hits.length - 1; i++) {
+      expect(r.hits[i].score).toBeGreaterThanOrEqual(r.hits[i + 1].score); // non-increasing
+    }
   });
 });
 
@@ -295,13 +318,20 @@ describe("highlighting + weighted sort", () => {
     });
   });
 
-  it("prefix query highlights the full term", async () => {
-    const t = await setupShop();
-    const r = await t.query(api.search.search, { collection: "shop", q: "run" });
-    const hit = r.hits.find((h: any) => h.id === "1");
-    expect(hit).toBeDefined();
-    expect(hit!.highlight.name.snippet).toContain("<mark>Running</mark>");
-  });
+  it.skip(
+    "prefix query highlights the full term",
+    /* native search: convex-test does not simulate prefix expansion, so q:"run"
+       returns no hits and highlight cannot be tested here.
+       Covered by live smoke: example/SMOKE.md Step 3 (native prefix returns hits;
+       highlight wraps the full expanded token e.g. <mark>Running</mark>). */
+    async () => {
+      const t = await setupShop();
+      const r = await t.query(api.search.search, { collection: "shop", q: "run" });
+      const hit = r.hits.find((h: any) => h.id === "1");
+      expect(hit).toBeDefined();
+      expect(hit!.highlight.name.snippet).toContain("<mark>Running</mark>");
+    },
+  );
 
   it("browse mode yields empty highlight", async () => {
     const t = await setupShop();
@@ -309,15 +339,22 @@ describe("highlighting + weighted sort", () => {
     expect(r.hits[0].highlight).toEqual({});
   });
 
-  it("rankBy blends popularity to reorder (and text_match stays raw)", async () => {
+  it("rankBy blends popularity to reorder (delta D2 — score is synthScore, not raw text_match)", async () => {
     const t = await setupShop();
     const r = await t.query(api.search.search, {
       collection: "shop",
       q: "running",
       rankBy: { text: 1, fields: [{ field: "popularity", weight: 1 }] },
     });
-    expect(r.hits[0].id).toBe("2"); // popularity 100 wins
-    expect(r.hits[0].score).toBe(3); // reported relevance still raw
+    expect(r.hits[0].id).toBe("2"); // popularity 100 wins — ordering is unchanged
+    // Under the hybrid design hit.score = synthScore(rankPos, total) where rankPos
+    // is the NATIVE order position, NOT the reranked position.
+    // The old raw text_match value (3) is gone; scores are now in (0, 1].
+    for (const h of r.hits) {
+      expect(typeof h.score).toBe("number");
+      expect(h.score).toBeGreaterThan(0);
+      expect(h.score).toBeLessThanOrEqual(1);
+    }
   });
 
   it("sortBy price ascending orders by field", async () => {
