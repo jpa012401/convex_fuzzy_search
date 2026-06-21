@@ -12,7 +12,6 @@ import type * as dataset from "../dataset.js";
 import type * as places from "../places.js";
 import type * as placesData from "../placesData.js";
 import type * as products from "../products.js";
-import type * as smoke from "../smoke.js";
 
 import type {
   ApiFromModules,
@@ -25,7 +24,6 @@ declare const fullApi: ApiFromModules<{
   places: typeof places;
   placesData: typeof placesData;
   products: typeof products;
-  smoke: typeof smoke;
 }>;
 
 /**
