@@ -23,14 +23,26 @@ export function synthScore(rankPos: number, total: number): number {
   return total <= 0 ? 0 : (total - rankPos) / total;
 }
 
-// Native search is OR-by-relevance. Re-impose AND app-side: keep only candidates
-// whose slotText (re-tokenized) contains every query token. Empty token list ->
-// pass-through. Order is preserved.
+// Native search is OR-by-relevance with PREFIX matching on the LAST query token
+// (search-as-you-type). Re-impose AND app-side while preserving that prefix
+// semantics: every non-last token must be exactly present in the candidate's
+// slotText; the last token matches if any candidate token EQUALS it OR STARTS
+// WITH it (prefix). Empty token list -> pass-through. Order is preserved.
+//
+// Without the prefix exception, a query like "jack" (native prefix-matches
+// "jacket") would be filtered out here because no candidate token literally
+// equals "jack" — silently breaking prefix search.
 export function reverifyAnd(cands: Candidate[], queryTokens: string[]): Candidate[] {
   if (queryTokens.length === 0) return cands;
+  const lastIdx = queryTokens.length - 1;
   return cands.filter((c) => {
-    const present = new Set(tokenize(c.slotText));
-    return queryTokens.every((tok) => present.has(tok));
+    const tokens = tokenize(c.slotText);
+    const present = new Set(tokens);
+    return queryTokens.every((tok, i) => {
+      if (i < lastIdx) return present.has(tok); // non-last: exact
+      // last token: exact OR prefix (mirrors native's last-token prefix match)
+      return present.has(tok) || tokens.some((t) => t.startsWith(tok));
+    });
   });
 }
 

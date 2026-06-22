@@ -342,6 +342,12 @@ These are the price of native retrieval; all are intentional and documented.
    (`price:[100..200]`, `price>=50`) run as an in-memory `Predicate` over the candidate window.
 7. **Native indexing is synchronous-at-commit** (verified on 1.41) — instant searchability is
    preserved. (If a future Convex version made it async, instant consistency would weaken.)
+8. **Prefix matching has a minimum prefix length.** Native `.searchIndex` only expands the last
+   token as a prefix once it is long enough (~5 chars on the local backend; e.g. `jacke`→`jacket`
+   matches, `jack` returns nothing). Below that floor native returns no candidates, so very short
+   search-as-you-type fragments don't match. `reverifyAnd` correctly preserves prefix semantics on
+   the last token *wherever native returns candidates* (so multi-token prefix queries like
+   `"rain jacke"` work) — the floor is a native-platform characteristic, not an app-side one.
 
 ---
 

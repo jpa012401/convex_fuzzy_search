@@ -58,20 +58,6 @@ export async function readFacetCounts(
     .map((r) => ({ value: r.value, count: r.count }));
 }
 
-// Distinct values of a facet field (bounded by FACET_VALUE_READ_BUDGET), for
-// driving the filtered-facet intersection.
-export async function facetValuesForField(
-  ctx: QueryCtx,
-  collection: string,
-  field: string,
-): Promise<string[]> {
-  const rows = await ctx.db
-    .query("facetCounts")
-    .withIndex("by_field", (q) => q.eq("collection", collection).eq("field", field))
-    .take(FACET_VALUE_READ_BUDGET);
-  return rows.map((r) => r.value);
-}
-
 // Delete all facetCounts rows for a collection (used by deleteCollection and by
 // the backfill's clear-then-rebuild). by_field's prefix is [collection], so
 // eq("collection", ...) enumerates every (field, value) row for the collection.

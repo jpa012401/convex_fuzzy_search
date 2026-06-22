@@ -60,6 +60,24 @@ describe("reverifyAnd", () => {
     const kept = reverifyAnd(cands, ["alpha", "beta"]);
     expect(kept.map((c) => c.docId)).toEqual(["a", "c"]);
   });
+  it("treats the LAST token as a prefix (search-as-you-type)", () => {
+    // "jacke" is not a full token in "rain jacket" but IS a prefix of "jacket".
+    // Native .searchIndex prefix-matches the last token; reverifyAnd must not
+    // reject it (the bug: requiring exact presence dropped all prefix hits).
+    const cands = [
+      cand("a", "rain jacket", 0),
+      cand("b", "rain boots", 1),
+    ];
+    const kept = reverifyAnd(cands, ["rain", "jacke"]);
+    expect(kept.map((c) => c.docId)).toEqual(["a"]); // b lacks a "jacke*" token
+  });
+  it("non-last tokens still require EXACT presence (only the last is a prefix)", () => {
+    // "jac" as a non-last token must NOT prefix-match "jacket".
+    const cands = [cand("a", "jacket shoe", 0)];
+    expect(reverifyAnd(cands, ["jac", "shoe"]).map((c) => c.docId)).toEqual([]);
+    // but as the last token it prefix-matches:
+    expect(reverifyAnd(cands, ["shoe", "jac"]).map((c) => c.docId)).toEqual(["a"]);
+  });
 });
 
 describe("pickSearchSlot", () => {
