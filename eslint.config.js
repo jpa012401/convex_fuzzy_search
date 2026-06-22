@@ -14,6 +14,7 @@ export default [
       "example/**/*.config.{js,mjs,cjs,ts,tsx}",
       "**/_generated/",
       "initTemplate.mjs",
+      "scripts/**", // dev tooling (Node env): seed.sh, concurrency-bench.mjs
     ],
   },
   {

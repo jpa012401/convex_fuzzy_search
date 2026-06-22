@@ -525,3 +525,13 @@ export const benchmark = action({
     return out;
   },
 });
+
+// --- concurrency benchmark -------------------------------------------------
+// NOTE: latency UNDER LOAD (p50/p95/p99 + QPS) is measured from the CLIENT, not
+// from inside an action. A single action runs in one execution context and its
+// ctx.runQuery calls are serialized by Convex (firing them in parallel trips the
+// dangling-promise guard) — so it cannot exercise the deployment's query-
+// concurrency scheduler. The real concurrency ceiling (e.g. Convex S16 = 16
+// concurrent queries) only shows up when N separate client requests hit the
+// deployment at once. See scripts/concurrency-bench.mjs:
+//   node scripts/concurrency-bench.mjs 32 3   # 32 parallel, 3 rounds

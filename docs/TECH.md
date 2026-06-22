@@ -307,6 +307,32 @@ facet **value** (e.g. `status:"active"` on a large fraction of docs) sharing one
 B-tree leaf — mitigated by namespacing + `maxNodeSize`, not eliminated (no sharded-counter
 component is installed).
 
+**Latency is flat with collection size, not doc-count.** Because every read is bounded
+(≤K candidates, aggregate counts), per-query latency is ~constant from 5k to millions of docs —
+that is the rebuild's core guarantee. The heaviest shapes are the **custom-order browse** paths
+(`rankBy` / undeclared `sortBy` with no text/filter), which load and re-rank the candidate window
+**in memory**.
+
+**The re-rank window is the latency/accuracy knob** for those shapes (`search.ts`):
+`DEFAULT_RERANK_WINDOW = 200`, `MAX_RERANK_WINDOW = 1000`, `CUSTOM_ORDER_WINDOW = 200`; a ranking
+profile may set its own `window` (clamped to `MAX_RERANK_WINDOW`). Bigger window = more accurate
+ordering over more candidates but more in-memory work per query; smaller = faster but the ordering
+covers fewer docs (and `found_approximate` is set to signal the result is window-bounded). These
+constants are where you trade ranking depth for latency.
+
+**Measuring it.** `products:benchmark` reports single-query latency + correctness signals per
+query shape. `products:concurrencyBenchmark` fires N queries in parallel and reports p50/p95/p99 +
+effective QPS — this is what reflects the deployment's **concurrency class**: Convex **S16** runs
+at most 16 concurrent queries, so beyond ~16 in-flight, queued queries inflate p99/max (each
+query's own latency is unchanged — the queue is the bottleneck). Single-query latency does not
+depend on the class; throughput does. Run e.g.
+`npx convex run products:concurrencyBenchmark '{"concurrency":32,"rounds":3}'`.
+
+> **Local vs. hosted (S16):** a local backend has no app→deployment network hop, but Convex hosts
+> co-locate function + DB (sub-ms reads, ~10ms warm isolate), so local single-query timings are a
+> reasonable proxy for S16 per-query latency. The real production difference is the **16-concurrent
+> ceiling** (a throughput limit, addressed by S256/D1024), not per-query speed.
+
 ---
 
 ## 9. Known limitations & deliberate trade-offs
