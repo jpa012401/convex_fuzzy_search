@@ -170,8 +170,12 @@ const SAMPLE = [
 export const seed = mutation({
   args: {},
   handler: async (ctx) => {
-    const existing = await search.getCollection(ctx, COLLECTION);
-    if (existing) await search.deleteCollection(ctx, COLLECTION);
+    // Do NOT deleteCollection here: its teardown self-schedules and leaves the
+    // `deletions`/index rows mid-drain, so a synchronous sync() right after would
+    // throw "deletion in progress". sync() is idempotent and reconciles config;
+    // clearing productDocs + re-upserting the samples refreshes the data. (For a
+    // full hard reset that also drops stale index rows, use startSeed reset:true,
+    // which sequences delete -> clear -> re-sync -> seed across scheduled steps.)
     await clearAllProductDocs(ctx);
     await search.sync(ctx);
     const now = Date.now();
@@ -230,6 +234,24 @@ export const clearProductDocs = mutation({
       return { deleted: page.page.length, done: false };
     }
     if (thenSeed) {
+      // Re-sync BEFORE seeding: the reset path dropped the collection via
+      // deleteCollection, so the collection row no longer exists. seedChain ->
+      // insertAndIndex -> upsertMany requires it (else CollectionNotFound).
+      // sync recreates it from config, but it throws "deletion in progress" if
+      // deleteCollection's batched teardown hasn't fully drained yet. In that
+      // case, wait one tick and retry — only schedule seedChain once sync wins.
+      try {
+        await search.sync(ctx);
+      } catch (e) {
+        if (String((e as Error)?.message ?? e).includes("deletion in progress")) {
+          await ctx.scheduler.runAfter(50, api.products.clearProductDocs, {
+            cursor: null,
+            thenSeed,
+          });
+          return { deleted: page.page.length, done: false };
+        }
+        throw e;
+      }
       await ctx.scheduler.runAfter(0, api.products.seedChain, {
         start: 0,
         total: thenSeed.total,

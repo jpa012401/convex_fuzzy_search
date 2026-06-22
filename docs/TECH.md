@@ -30,11 +30,12 @@ rationale and the scale review that motivated this architecture, see
    │  write.ts → projectToSlots →         search.ts → runTextQuery /           │
    │    1 searchDocs row                    runEmptyQFilterQuery                │
    │    + aggregate ops                     → native .searchIndex (.take K)     │
-   │                                        → reverifyAnd (OR→AND)              │
-   │  searchDocs ── 9 native ── s0..s8       → resolveFoundAndFacets            │
-   │   (generic slots)  search indexes       → ranking DSL re-rank             │
-   │                                         → Typesense envelope (ids+hilite)  │
-   │  facetCounts (table)   @convex-dev/aggregate: docCount, sortIndex          │
+   │    + applyTermDiff (dict)               → reverifyAnd (OR→AND)             │
+   │  searchDocs ── 9 native ── s0..s8       → suggestTerms on miss (typo)      │
+   │   (generic slots)  search indexes       → resolveFoundAndFacets           │
+   │  facetCounts (table)                     → ranking DSL re-rank            │
+   │  terms + trigrams (typo dict)            → Typesense envelope (ids+hilite) │
+   │  @convex-dev/aggregate: docCount, sortIndex                                │
    └───────────────────────────────────────────────────────────────────────────┘
                ▼  search returns IDS + scores + highlights
         the app HYDRATES serving fields from its own table by id
@@ -91,7 +92,7 @@ See `example/convex/products.ts` for a complete working driver.
 
 ## 3. Data model
 
-The component schema has exactly **four tables**:
+The component schema has **six tables** (four core + the two-table typo dictionary):
 
 ### `searchDocs` — the generic-slot indexed table
 One row per `(collection, docId)`. A fixed pool of generic columns backs nine native search
@@ -126,6 +127,17 @@ The synced config per collection (`searchFields`, `filterFields`, `facetFields`,
 ### `deletions` — teardown bookkeeping
 Tracks an in-progress `deleteCollection` so a same-named collection can't be re-created mid-teardown.
 
+### `terms` + `trigrams` — the typo-correction dictionary (§7 typo tolerance)
+- **`terms`** — `(collection, term) → docCount`, the distinct-term vocabulary, ref-counted so a
+  term is one row regardless of how many documents contain it. Index `by_collection_term`.
+- **`trigrams`** — `(collection, gram, term)`, the gram→term bridge for fuzzy candidate lookup.
+  Indexes `by_collection_gram` (query-time lookup) + `by_collection_term` (cleanup).
+
+Both are maintained incrementally on write (`termDict.applyTermDiff`, per-document term sets) and
+read only at query time for typo correction, **bounded by the candidate budget (≤200 reads) and
+scaled by vocabulary, not document count**. They are cleared in bounded batches by
+`deleteCollection` (`clearCollectionTermsBatch`). See §7 (typo tolerance) and §5 (read path).
+
 ### Aggregate components (separate, via `@convex-dev/aggregate`)
 - **`docCount`** — O(log n) collection size (`out_of`) and ordered browse pagination.
 - **`sortIndex`** — one composite-keyed entry per declared `sortSpec`, for indexed browse-by-sort
@@ -147,10 +159,13 @@ Tracks an in-progress `deleteCollection` so a same-named collection can't be re-
 4. Insert **one** `searchDocs` row.
 5. Aggregate/table ops: `addDoc` → docCount (new docs only); `incrementFacet`/`decrementFacet`
    on the `facetCounts` table; `addSortEntry`/`removeSortEntry` → sortIndex.
+6. `applyTermDiff(oldTerms, newTerms)` (`termDict.ts`) — ref-counts the doc's distinct terms in
+   the `terms` dictionary and maintains `trigrams` (adds on a term's first sight, removes at
+   docCount 0). `newTerms` = the doc's tokenized searchFields; `oldTerms` = the prior row's terms.
 
-**Cost:** ~1 row write + O(facets + sortSpecs) aggregate ops per document — no posting fan-out,
-no per-term rows, no monotonic docKey counter. A single large-text document can no longer blow
-the per-mutation write or array-size limits.
+**Cost:** ~1 row write + O(facets + sortSpecs) aggregate ops + a per-document (vocabulary-scale)
+dictionary diff — no posting fan-out, no monotonic docKey counter. A single large-text document
+can no longer blow the per-mutation write or array-size limits.
 
 **`upsertMany`** processes docs in slices of `UPSERT_MANY_BATCH` (= `floor(3000 / WRITES_PER_DOC)` =
 250) and self-schedules `upsertManyChain` via `ctx.scheduler.runAfter` for the remainder — bounded
@@ -257,6 +272,7 @@ Construct once per app module: `new FuzzySearch(components.fuzzySearch, { collec
 |---|---|
 | Tokenized full-text search, multi-word **AND** | native `.searchIndex` (OR) + app-side `reverifyAnd` |
 | Prefix / search-as-you-type (last token) | native search |
+| Typo tolerance — misspelled token corrected then re-searched (on miss) | `termDict.ts` `suggestTerms` (trigram dictionary + bounded Levenshtein within `typoBudget`); see §9.1 for limits |
 | Filtering — exact, in-set, numeric comparators/ranges, `&&`/`||`/parens | `filterRank.ts` (native `.eq` push-down + in-memory residual `Predicate`) |
 | Faceting / facet counts | `facetCounts` table (browse) + candidate-window tally (query-scoped) |
 | Multi-key sort (`sortBy`) over numeric fields / `_text_match` | `sortIndex` aggregate |
@@ -281,8 +297,9 @@ The rebuild's reason for existing. Read cost is independent of collection size:
 | `deleteCollection` | batched + self-scheduling | safe at any size |
 
 **Validated:** seeded **5,006 documents** on a local backend through the full lifecycle; text
-search (`found: 86`), filter+facet (`found: 15` with per-brand counts), and text+filter
-(`found: 24`) all correct; all three sort specs report `count: 5006`.
+search (`found: 86`), filter+facet (`category:Electronics` → `found: 13` with per-brand counts),
+text+filter (`found: 24`), and **typo correction** (`"runing"` → corrected to `running` →
+`found: 86`) all correct; all three sort specs report `count: 5006`.
 
 **Throughput caveat:** the strongest write win is removing the single hot docKey counter, so
 concurrent ingest scales far better than before. The remaining contention is a single dominant
@@ -296,13 +313,17 @@ component is installed).
 
 These are the price of native retrieval; all are intentional and documented.
 
-1. **No typo tolerance (regression).** The old hand-rolled engine matched misspellings (trigram
-   candidates + bounded Levenshtein, tunable budget). Native search does **not** do this, and
-   native fuzzy is being **deprecated**. So `"runing"` no longer matches `"running"`. The
-   `fuzzy.ts` primitives (`typoBudget`, bounded `levenshtein`) **remain in the tree, unwired** —
-   restoring this as an opt-in trigram "spell-suggest" layer (re-add a `trigrams` table on write;
-   at query time expand a token to nearby indexed terms before searching) is additive future work,
-   not a rewrite.
+1. **Typo tolerance is query-side correction, with edit-distance limits.** Native search itself
+   does **not** match misspellings (native fuzzy is being deprecated), so typo tolerance is
+   provided by a **query-side suggest-then-search** layer (§7, `termDict.ts`): on a search miss, a
+   typo'd token is corrected to a near-by corpus term via the trigram dictionary + bounded
+   Levenshtein within `typoBudget`, then native search re-runs with the corrected term. Residual
+   limits: (a) correction follows the per-length budget (`≤3` chars → 0 typos, `≤7` → 1, else 2),
+   and **transpositions count as 2 edits** under plain Levenshtein (so `jacekt`→`jacket` is
+   distance 2, often below the trigram-overlap threshold and not corrected — same behavior as the
+   old engine); (b) the dictionary is built on write, so documents indexed before this layer
+   existed need a re-upsert before their terms are suggestible; (c) correction runs **on miss
+   only**, so a typo that happens to also be a valid prefix/term is not "corrected" away.
 2. **Relevance score is synthesized, not the exact scale.** Native search returns rank order with
    **no score**. `hit.score` is synthesized from rank position (`synthScore(rankPos, total)`), so
    the old `exact=3 / prefix=2 / typo=2−0.5d` scale is gone. Existing `rankProfiles` that depended
@@ -342,7 +363,7 @@ These are the price of native retrieval; all are intentional and documented.
 
 | Concern | Module |
 |---|---|
-| Schema (4 tables, 9 search indexes, `FILTER_SLOTS`, validators) | `schema.ts` |
+| Schema (6 tables, 9 search indexes, `FILTER_SLOTS`, validators) | `schema.ts` |
 | Field→slot assignment (`assignSlots`, `SLOT_LIMITS`, over-cap throw) | `slotMap.ts` |
 | Write: doc → slot row | `searchWrite.ts` (`projectToSlots`) |
 | Write path (upsert / upsertMany / delete) | `write.ts` |
@@ -354,7 +375,8 @@ These are the price of native retrieval; all are intentional and documented.
 | Sort/relevance comparators (`orderingScore`, `compareMatches`, `numField`) | `ranking.ts` |
 | Highlighting | `highlight.ts` |
 | Tokenizer (`tokenize`, `trigrams`) | `tokenizer.ts` |
-| Typo primitives (unwired — see §9.1) | `fuzzy.ts` |
+| Typo dictionary: write-maintenance (`applyTermDiff`) + query-side correction (`suggestTerms`) | `termDict.ts` |
+| Typo primitives (`typoBudget`, bounded `levenshtein`) used by `termDict` | `fuzzy.ts` |
 | Counts/pagination aggregate | `counters.ts` |
 | Sort aggregate | `sortIndex.ts` |
 | Facet counters (table) | `facetCounts.ts` |
