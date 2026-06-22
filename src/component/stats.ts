@@ -6,9 +6,6 @@ import { FACET_VALUE_READ_BUDGET } from "./facetCounts";
 import { canonicalSpecId, sortSpecCount } from "./sortIndex";
 import { statsResultValidator } from "./schema";
 
-const FACET_POSTINGS_READ_BUDGET = 500;
-const FILTER_POSTINGS_READ_BUDGET = 500;
-
 // Index-health snapshot for a collection. Reads the live counts maintained in
 // the aggregate/counter components so a consumer can validate that every index
 // is fully populated: for a healthy, fully-backfilled collection every
@@ -52,57 +49,6 @@ export const stats = query({
       });
     }
 
-    // FacetPostings health — for each declared facet field, count the total
-    // docKeys across all its facetPostings buckets and report distinct values.
-    const facetPostings: { field: string; totalDocKeys: number; distinctValues: number }[] = [];
-    for (const field of col.facetFields ?? []) {
-      const rows = await ctx.db
-        .query("facetPostings")
-        .withIndex("by_collection_field_value", (q) =>
-          q.eq("collection", args.collection).eq("field", field),
-        )
-        .take(FACET_POSTINGS_READ_BUDGET);
-      let totalDocKeys = 0;
-      const distinctValueSet = new Set<string>();
-      for (const row of rows) {
-        totalDocKeys += row.docKeys.length;
-        distinctValueSet.add(row.value);
-      }
-      facetPostings.push({ field, totalDocKeys, distinctValues: distinctValueSet.size });
-    }
-
-    // FilterPostings health — for each declared filter field, count the total
-    // docKeys across all its filterPostings buckets and report distinct values or
-    // numeric buckets. String rows carry `docKeys: number[]`; numeric rows carry
-    // `entries: {docKey, num}[]`. Scanning both indexes for each field is safe
-    // because a field is always one kind; only one index will yield rows.
-    const filterPostings: { field: string; totalDocKeys: number; distinctOrBuckets: number }[] = [];
-    for (const { field } of col.filterFields ?? []) {
-      const strRows = await ctx.db
-        .query("filterPostings")
-        .withIndex("by_str", (q) =>
-          q.eq("collection", args.collection).eq("field", field),
-        )
-        .take(FILTER_POSTINGS_READ_BUDGET);
-      const numRows = await ctx.db
-        .query("filterPostings")
-        .withIndex("by_num", (q) =>
-          q.eq("collection", args.collection).eq("field", field),
-        )
-        .take(FILTER_POSTINGS_READ_BUDGET);
-      let totalDocKeys = 0;
-      let distinctOrBuckets = 0;
-      for (const row of strRows) {
-        totalDocKeys += (row.docKeys?.length ?? 0);
-        distinctOrBuckets++;
-      }
-      for (const row of numRows) {
-        totalDocKeys += (row.entries?.length ?? 0);
-        distinctOrBuckets++;
-      }
-      filterPostings.push({ field, totalDocKeys, distinctOrBuckets });
-    }
-
-    return { out_of, facets, sortSpecs, facetPostings, filterPostings };
+    return { out_of, facets, sortSpecs };
   },
 });

@@ -136,6 +136,17 @@ export class FuzzySearch {
     });
   }
 
+  /**
+   * DESTRUCTIVE full reset: wipe every collection, all index tables, the typo
+   * dictionary, facet counters, and both aggregates back to empty — the entire
+   * component. Batched + self-scheduling, so it is safe at any size. After this
+   * you must re-sync (and re-seed) your collections. Intended for dev/admin/test.
+   * Returns `{ done }`: false means a self-scheduled continuation is still draining.
+   */
+  async resetAll(ctx: MutationCtx, batchSize?: number): Promise<{ done: boolean }> {
+    return ctx.runMutation(this.component.collections.resetAll, { batchSize });
+  }
+
   async upsert(
     ctx: MutationCtx,
     args: { collection: string; id: string; doc: Record<string, unknown> },

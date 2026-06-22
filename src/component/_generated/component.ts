@@ -137,9 +137,21 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             }
           >;
           searchFields: Array<string>;
+          slotMap?: {
+            numFilter: Record<string, string>;
+            search: Record<string, string>;
+            strFilter: Record<string, string>;
+          };
           sortSpecs?: Array<Array<{ field: string; order: "asc" | "desc" }>>;
           storedFields: "all" | "derived" | Array<string>;
         } | null,
+        Name
+      >;
+      resetAll: FunctionReference<
+        "mutation",
+        "internal",
+        { batchSize?: number },
+        { done: boolean },
         Name
       >;
     };
@@ -264,21 +276,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { collection: string },
         {
-          facetPostings: Array<{
-            distinctValues: number;
-            field: string;
-            totalDocKeys: number;
-          }>;
           facets: Array<{
             distinctValues: number;
             field: string;
             total: number;
             truncated: boolean;
-          }>;
-          filterPostings: Array<{
-            distinctOrBuckets: number;
-            field: string;
-            totalDocKeys: number;
           }>;
           out_of: number;
           sortSpecs: Array<{ count: number; specId: string }>;

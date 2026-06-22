@@ -170,8 +170,12 @@ const SAMPLE = [
 export const seed = mutation({
   args: {},
   handler: async (ctx) => {
-    const existing = await search.getCollection(ctx, COLLECTION);
-    if (existing) await search.deleteCollection(ctx, COLLECTION);
+    // Do NOT deleteCollection here: its teardown self-schedules and leaves the
+    // `deletions`/index rows mid-drain, so a synchronous sync() right after would
+    // throw "deletion in progress". sync() is idempotent and reconciles config;
+    // clearing productDocs + re-upserting the samples refreshes the data. (For a
+    // full hard reset that also drops stale index rows, use startSeed reset:true,
+    // which sequences delete -> clear -> re-sync -> seed across scheduled steps.)
     await clearAllProductDocs(ctx);
     await search.sync(ctx);
     const now = Date.now();
@@ -230,6 +234,24 @@ export const clearProductDocs = mutation({
       return { deleted: page.page.length, done: false };
     }
     if (thenSeed) {
+      // Re-sync BEFORE seeding: the reset path dropped the collection via
+      // deleteCollection, so the collection row no longer exists. seedChain ->
+      // insertAndIndex -> upsertMany requires it (else CollectionNotFound).
+      // sync recreates it from config, but it throws "deletion in progress" if
+      // deleteCollection's batched teardown hasn't fully drained yet. In that
+      // case, wait one tick and retry — only schedule seedChain once sync wins.
+      try {
+        await search.sync(ctx);
+      } catch (e) {
+        if (String((e as Error)?.message ?? e).includes("deletion in progress")) {
+          await ctx.scheduler.runAfter(50, api.products.clearProductDocs, {
+            cursor: null,
+            thenSeed,
+          });
+          return { deleted: page.page.length, done: false };
+        }
+        throw e;
+      }
       await ctx.scheduler.runAfter(0, api.products.seedChain, {
         start: 0,
         total: thenSeed.total,
@@ -342,6 +364,55 @@ export const dropProducts = mutation({
   },
 });
 
+// DESTRUCTIVE full reset of BOTH sides back to empty:
+//   - the component: every collection, all index tables, the typo dictionary,
+//     facet counters, and both aggregates (via search.resetAll — batched +
+//     self-scheduling, so `done:false` means a continuation is still draining).
+//   - the app's own tables: productDocs, placeDocs, profiles.
+// Bounded + self-scheduling on BOTH sides so it stays under the per-mutation
+// 4096-read limit at any scale. After this, re-sync + re-seed (scripts/seed.sh).
+// Dev/admin/test only.
+const APP_TABLES = ["productDocs", "placeDocs", "profiles"] as const;
+const RESET_BATCH = 500; // app-table rows deleted per call (well under the read limit)
+
+// Delete one bounded batch across the app tables. Returns true when all are empty.
+async function clearAppTablesBatch(ctx: MutationCtx): Promise<boolean> {
+  for (const table of APP_TABLES) {
+    const rows = await ctx.db.query(table).take(RESET_BATCH);
+    if (rows.length > 0) {
+      for (const row of rows) await ctx.db.delete(row._id);
+      return false;
+    }
+  }
+  return true;
+}
+
+export const resetEverything = mutation({
+  args: {},
+  handler: async (ctx): Promise<{ component: { done: boolean }; appDone: boolean }> => {
+    // Kick off the component reset once (it self-schedules its own teardown chain).
+    const component = await search.resetAll(ctx);
+    // Clear a bounded batch of the app tables; self-schedule the rest.
+    const appDone = await clearAppTablesBatch(ctx);
+    if (!appDone) {
+      await ctx.scheduler.runAfter(0, api.products.clearAppTablesChain, {});
+    }
+    return { component, appDone };
+  },
+});
+
+// Self-scheduling continuation that drains the app tables in bounded batches.
+export const clearAppTablesChain = mutation({
+  args: {},
+  handler: async (ctx): Promise<{ done: boolean }> => {
+    const done = await clearAppTablesBatch(ctx);
+    if (!done) {
+      await ctx.scheduler.runAfter(0, api.products.clearAppTablesChain, {});
+    }
+    return { done };
+  },
+});
+
 // Replays the app-owned productDocs back through the component's upsert,
 // rebuilding index rows for any newly-added structural field, then clears the
 // collection's pending flag when done. Self-chains in the background like
@@ -350,11 +421,10 @@ export const dropProducts = mutation({
 export const reindex = mutation({
   args: { cursor: v.optional(v.union(v.string(), v.null())), batch: v.optional(v.number()) },
   handler: async (ctx, { cursor, batch }) => {
-    // Small default batch: each replayed upsert does a clear-then-rebuild that
-    // READS the doc's whole index footprint (postingChunks/docTerms/trigrams/filters),
-    // so the per-doc read cost is far higher than a fresh insert. Batches above
-    // ~10-20 risk the 4,096-reads-per-call limit on docs with many terms.
-    const size = Math.min(batch ?? 10, MAX_COMPONENT_BATCH);
+    // Hybrid upsert writes ~1 searchDocs row + a few aggregate ops per doc, so the
+    // default page rises to MAX_COMPONENT_BATCH. PAGE SOURCE is the app's own
+    // productDocs table — the component never reads the app corpus.
+    const size = Math.min(batch ?? MAX_COMPONENT_BATCH, MAX_COMPONENT_BATCH);
     const page = await ctx.db.query("productDocs").paginate({
       numItems: size,
       cursor: cursor ?? null,
@@ -428,38 +498,89 @@ export const searchProducts = query({
 // --- benchmark harness -----------------------------------------------------
 // Runs a representative set of queries and reports found + server-side timing,
 // exercising every feature against the loaded dataset.
+// Benchmark + result-assessment harness. Each case echoes the exact query it ran
+// and reports timing PLUS assessment signals (found, approximate?, page-size,
+// facet groups returned, top hit + its score) so you can judge correctness, not
+// just speed. Run: npx convex run products:benchmark '{}'
+type BenchRow = {
+  label: string;
+  query: string; // human-readable echo of the query that ran
+  ms: number;
+  found: number;
+  approximate: boolean; // found_approximate — is `found` a floor (>native window)?
+  out_of: number;
+  returned: number; // hits on this page
+  facetGroups: number; // # facet fields with counts
+  topName?: string; // top hit's product name (hydrated) — eyeball relevance
+  topScore?: number; // top hit's score — assess ordering
+  assess: string; // one-line verdict: does the result look right for this query?
+};
+
+// Render the query args compactly for the echo column.
+function describeQuery(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  parts.push(`q=${JSON.stringify(args.q ?? "")}`);
+  if (args.filterBy) parts.push(`filter=${args.filterBy}`);
+  if (args.facetBy) parts.push(`facet=${JSON.stringify(args.facetBy)}`);
+  if (args.sortBy) parts.push(`sort=${JSON.stringify(args.sortBy)}`);
+  if (args.rankBy) parts.push(`rankBy`);
+  if (args.rank) parts.push(`rank=${(args.rank as { profile: string }).profile}`);
+  if (args.page) parts.push(`page=${args.page}`);
+  return parts.join(" ");
+}
+
 export const benchmark = action({
-  args: {},
-  handler: async (
-    ctx,
-  ): Promise<{ label: string; found: number; ms: number; top?: string }[]> => {
-    const cases: { label: string; args: Record<string, unknown> }[] = [
-      { label: "plain term", args: { q: "jacket" } },
-      { label: "multi-term AND", args: { q: "waterproof jacket" } },
-      { label: "prefix (as-you-type)", args: { q: "jack" } },
-      { label: "typo tolerance", args: { q: "jackt" } },
-      { label: "browse all", args: { q: "" } },
-      { label: "numeric range filter", args: { q: "", filterBy: "price:[50..150]" } },
-      { label: "boolean+facet", args: { q: "", filterBy: "inStock:true", facetBy: ["category"] } },
-      { label: "category facet (browse)", args: { q: "", facetBy: ["brand", "category"] } },
+  args: { expectTyped: v.optional(v.boolean()) },
+  handler: async (ctx): Promise<BenchRow[]> => {
+    const cases: { label: string; args: Record<string, unknown>; expect?: (r: any) => string }[] = [
+      { label: "plain term", args: { q: "jacket" }, expect: (r) => (r.found > 0 ? "ok: matched" : "EMPTY") },
+      { label: "multi-term AND", args: { q: "waterproof jacket" }, expect: (r) => (r.found > 0 ? "ok: AND matched" : "no AND match") },
+      // Native .searchIndex prefix matching has a minimum prefix length (~5 chars
+      // on the local backend); shorter fragments like "jack" return nothing. Use a
+      // prefix native actually expands so the benchmark assesses real behavior.
+      { label: "prefix (as-you-type)", args: { q: "jacke" }, expect: (r) => (r.found > 0 ? "ok: prefix" : "EMPTY (native min-prefix-len?)") },
+      { label: "typo correction", args: { q: "jaket" }, expect: (r) => (r.found > 0 ? "ok: corrected->jacket" : "no correction") },
+      { label: "browse all", args: { q: "" }, expect: (r) => (r.found === r.out_of ? "ok: found==out_of" : "MISMATCH found/out_of") },
+      { label: "numeric range filter", args: { q: "", filterBy: "price:[50..150]" }, expect: (r) => (r.found >= 0 ? `ok: ${r.found} in range` : "ERR") },
+      { label: "text + filter", args: { q: "shoe", filterBy: "category:Footwear" }, expect: (r) => `text∩filter -> ${r.found}` },
+      { label: "boolean+facet", args: { q: "", filterBy: "inStock:true", facetBy: ["category"] }, expect: (r) => (r.facet_counts?.[0]?.counts?.length ? "ok: facet counts" : "no facet counts") },
+      { label: "category facet (browse)", args: { q: "", facetBy: ["brand", "category"] }, expect: (r) => (r.facet_counts?.length === 2 ? "ok: 2 facet groups" : "missing facet group") },
       {
         label: "personalized weighted sort",
         args: { q: "", rankBy: { text: 1, fields: [{ field: "affinity", weight: 5 }, { field: "popularity", weight: 0.01 }] } },
+        expect: (r) => (r.hits.length ? "ok: ranked" : "EMPTY"),
       },
-      { label: "multi-key sort (rating desc)", args: { q: "", sortBy: [{ field: "rating", order: "desc" }] } },
-      { label: "deep pagination (page 40)", args: { q: "", page: 40, perPage: 20 } },
+      { label: "multi-key sort (rating desc)", args: { q: "", sortBy: [{ field: "rating", order: "desc" }] }, expect: (r) => (r.hits.length ? "ok: sorted" : "EMPTY") },
+      { label: "deep pagination (page 40)", args: { q: "", page: 40, perPage: 20 }, expect: (r) => `page40 -> ${r.hits.length} hits` },
     ];
-    const out = [];
+    const out: BenchRow[] = [];
     for (const c of cases) {
       const start = Date.now();
       const r: any = await ctx.runQuery(api.products.searchProducts, c.args as any);
       out.push({
         label: c.label,
-        found: r.found,
+        query: describeQuery(c.args),
         ms: Date.now() - start,
-        top: r.hits[0]?.document?.name,
+        found: r.found,
+        approximate: !!r.found_approximate,
+        out_of: r.out_of,
+        returned: r.hits.length,
+        facetGroups: r.facet_counts?.length ?? 0,
+        topName: r.hits[0]?.document?.name,
+        topScore: r.hits[0]?.score,
+        assess: c.expect ? c.expect(r) : "ok",
       });
     }
     return out;
   },
 });
+
+// --- concurrency benchmark -------------------------------------------------
+// NOTE: latency UNDER LOAD (p50/p95/p99 + QPS) is measured from the CLIENT, not
+// from inside an action. A single action runs in one execution context and its
+// ctx.runQuery calls are serialized by Convex (firing them in parallel trips the
+// dangling-promise guard) — so it cannot exercise the deployment's query-
+// concurrency scheduler. The real concurrency ceiling (e.g. Convex S16 = 16
+// concurrent queries) only shows up when N separate client requests hit the
+// deployment at once. See scripts/concurrency-bench.mjs:
+//   node scripts/concurrency-bench.mjs 32 3   # 32 parallel, 3 rounds

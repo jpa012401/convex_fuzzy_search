@@ -24,6 +24,13 @@ export const sortKeyValidator = v.object({
 
 export const sortSpecValidator = v.array(sortKeyValidator);
 
+// Persisted on the collection row: deterministic field-name -> slot mapping.
+export const slotMapValidator = v.object({
+  search: v.record(v.string(), v.string()), // fieldName -> "textN"
+  strFilter: v.record(v.string(), v.string()), // fieldName -> "filtN"
+  numFilter: v.record(v.string(), v.string()), // fieldName -> "numFN"
+});
+
 export type RankTerm = Infer<typeof rankTermValidator>;
 export type RankProfile = Infer<typeof rankProfileValidator>;
 
@@ -71,6 +78,7 @@ export const collectionDocValidator = v.object({
   ),
   rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
   pendingFields: v.optional(v.array(v.string())),
+  slotMap: v.optional(slotMapValidator),
 });
 
 export const hitValidator = v.object({
@@ -86,6 +94,17 @@ export const facetCountValidator = v.object({
   field_name: v.string(),
   counts: v.array(v.object({ value: v.string(), count: v.number() })),
 });
+
+// The single shared filterFields array spread into every searchDocs search
+// index so the nine indexes cannot drift. collection is always present so a
+// search is .eq("collection", name)-scoped (multi-tenant on one table).
+export const FILTER_SLOTS = [
+  "collection",
+  "filt0", "filt1", "filt2", "filt3", "filt4", "filt5", "filt6", "filt7",
+  "numF0", "numF1", "numF2", "numF3", "numF4", "numF5", "numF6",
+] as const;
+// NOTE: Convex caps a search index at 16 filterFields. FILTER_SLOTS holds
+// collection(1) + filt0..7(8) + numF0..6(7) = 16 — the hard maximum.
 
 export const searchResultValidator = v.object({
   found: v.number(),
@@ -108,20 +127,6 @@ export const statsResultValidator = v.object({
     }),
   ),
   sortSpecs: v.array(v.object({ specId: v.string(), count: v.number() })),
-  facetPostings: v.array(
-    v.object({
-      field: v.string(),
-      totalDocKeys: v.number(),
-      distinctValues: v.number(),
-    }),
-  ),
-  filterPostings: v.array(
-    v.object({
-      field: v.string(),
-      totalDocKeys: v.number(),
-      distinctOrBuckets: v.number(),
-    }),
-  ),
 });
 
 export default defineSchema({
@@ -144,6 +149,7 @@ export default defineSchema({
     ),
     rankProfiles: v.optional(v.record(v.string(), rankProfileValidator)),
     pendingFields: v.optional(v.array(v.string())),
+    slotMap: v.optional(slotMapValidator),
   }).index("by_name", ["name"]),
 
   deletions: defineTable({
@@ -151,80 +157,50 @@ export default defineSchema({
     sortSpecs: v.array(sortSpecValidator),
   }).index("by_name", ["name"]),
 
-  documents: defineTable({
+  searchDocs: defineTable({
     collection: v.string(),
     docId: v.string(),
-    docKey: v.number(),
-    stored: v.any(), // projected fields returned in hits
+    // text0 = ALL searchFields concatenated (space-joined, no-queryBy fast path);
+    // text1..text8 = one mapped searchField each.
+    text0: v.optional(v.string()),
+    text1: v.optional(v.string()),
+    text2: v.optional(v.string()),
+    text3: v.optional(v.string()),
+    text4: v.optional(v.string()),
+    text5: v.optional(v.string()),
+    text6: v.optional(v.string()),
+    text7: v.optional(v.string()),
+    text8: v.optional(v.string()),
+    // String equality-filter slots.
+    filt0: v.optional(v.string()),
+    filt1: v.optional(v.string()),
+    filt2: v.optional(v.string()),
+    filt3: v.optional(v.string()),
+    filt4: v.optional(v.string()),
+    filt5: v.optional(v.string()),
+    filt6: v.optional(v.string()),
+    filt7: v.optional(v.string()),
+    // Numeric filter slots (real numeric columns for .eq + post-filtered ranges).
+    numF0: v.optional(v.number()),
+    numF1: v.optional(v.number()),
+    numF2: v.optional(v.number()),
+    numF3: v.optional(v.number()),
+    numF4: v.optional(v.number()),
+    numF5: v.optional(v.number()),
+    numF6: v.optional(v.number()),
+    // Stored projection returned in hits (storedFields.ts, kept).
+    stored: v.any(),
   })
     .index("by_collection_doc", ["collection", "docId"])
-    .index("by_collection_docKey", ["collection", "docKey"]),
-
-  docKeyCounters: defineTable({
-    collection: v.string(),
-    nextDocKey: v.number(),
-  }).index("by_collection", ["collection"]),
-
-  docTerms: defineTable({
-    collection: v.string(),
-    docKey: v.number(),
-    terms: v.array(
-      v.object({
-        term: v.string(),
-        field: v.string(),
-        tf: v.number(),
-      }),
-    ),
-  }).index("by_collection_docKey", ["collection", "docKey"]),
-
-  postingChunks: defineTable({
-    collection: v.string(),
-    term: v.string(),
-    bucket: v.number(),
-    entries: v.array(
-      v.object({
-        docKey: v.number(),
-        field: v.string(),
-        tf: v.number(),
-      }),
-    ),
-  })
-    .index("by_collection_term", ["collection", "term"])
-    .index("by_collection_term_bucket", ["collection", "term", "bucket"]),
-
-  terms: defineTable({
-    collection: v.string(),
-    term: v.string(),
-    docCount: v.number(), // number of docs in the collection containing this term
-  }).index("by_collection_term", ["collection", "term"]),
-
-  trigrams: defineTable({
-    collection: v.string(),
-    gram: v.string(),
-    term: v.string(),
-  })
-    .index("by_collection_gram", ["collection", "gram"]) // fuzzy candidate lookup
-    .index("by_collection_term", ["collection", "term"]), // cleanup when a term is removed
-
-  // Chunked inverted filter index. String/equality postings bucket docKeys by
-  // FILL ORDER under (collection, field, strVal). Numeric postings bucket docKeys
-  // by VALUE under (collection, field, valueBucket=floor(numVal/NUMERIC_BUCKET_WIDTH))
-  // so a [lo..hi] range reads only the contiguous bucket span. A row carries
-  // exactly one of strVal / numBucket (the kind is implied by the filter field type).
-  filterPostings: defineTable({
-    collection: v.string(),
-    field: v.string(),
-    // string rows: strVal set, docKeys holds the fill-bucketed docKeys.
-    strVal: v.optional(v.string()),
-    docKeys: v.optional(v.array(v.number())),
-    // numeric rows: numBucket set, entries holds (docKey, num) so edge buckets
-    // can be value-filtered for a range without a separate value lookup.
-    numBucket: v.optional(v.number()),
-    entries: v.optional(v.array(v.object({ docKey: v.number(), num: v.number() }))),
-    bucket: v.number(),
-  })
-    .index("by_str", ["collection", "field", "strVal", "bucket"])
-    .index("by_num", ["collection", "field", "numBucket", "bucket"]),
+    .searchIndex("s0", { searchField: "text0", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s1", { searchField: "text1", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s2", { searchField: "text2", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s3", { searchField: "text3", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s4", { searchField: "text4", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s5", { searchField: "text5", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s6", { searchField: "text6", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s7", { searchField: "text7", filterFields: [...FILTER_SLOTS] })
+    .searchIndex("s8", { searchField: "text8", filterFields: [...FILTER_SLOTS] }),
 
   facetCounts: defineTable({
     collection: v.string(),
@@ -235,13 +211,21 @@ export default defineSchema({
     .index("by_field", ["collection", "field"]) // enumerate all values for a field
     .index("by_value", ["collection", "field", "value"]), // locate the row to ++/--
 
-  facetPostings: defineTable({
+  // Vocabulary-scale trigram dictionary for typo correction (suggest-then-search).
+  // terms: ref-counted per (collection, term); docCount tracks how many docs contain the term.
+  // trigrams: one row per (collection, gram, term) for O(grams) query-time lookup.
+  terms: defineTable({
     collection: v.string(),
-    field: v.string(),
-    value: v.string(),
-    bucket: v.number(),
-    docKeys: v.array(v.number()),
+    term: v.string(),
+    docCount: v.number(),
+  }).index("by_collection_term", ["collection", "term"]),
+
+  trigrams: defineTable({
+    collection: v.string(),
+    gram: v.string(),
+    term: v.string(),
   })
-    .index("by_collection_field_value", ["collection", "field", "value"])
-    .index("by_collection_field_value_bucket", ["collection", "field", "value", "bucket"]),
+    .index("by_collection_gram", ["collection", "gram"])
+    .index("by_collection_term", ["collection", "term"]),
+
 });

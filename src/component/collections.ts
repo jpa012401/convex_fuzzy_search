@@ -2,11 +2,14 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
-import { clearCollectionCount } from "./counters";
-import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
+import { clearCollectionCount, clearAllCount } from "./counters";
+import { clearCollectionFacets } from "./facetCounts";
+import { canonicalSpecId, clearCollectionSort, clearAllSort } from "./sortIndex";
+import { clearCollectionTermsBatch } from "./termDict";
 import type { Infer } from "convex/values";
 import { collectionDocValidator, rankProfileValidator, rankTermValidator, sortSpecValidator } from "./schema";
 import type { SortKey } from "./ranking";
+import { assignSlots } from "./slotMap";
 
 const DELETE_BATCH_SIZE = 25;
 const DELETE_BATCHES_PER_PUBLIC_CALL = 64;
@@ -34,49 +37,11 @@ export async function requireCollection(ctx: QueryCtx, name: string) {
 }
 
 async function hasCollectionIndexRows(ctx: QueryCtx, name: string): Promise<boolean> {
-  const [doc, docTerm, postingChunk, docKeyCounter, term, trigram, filterPostingStr, filterPostingNum, facet, facetPosting] = await Promise.all([
-    ctx.db
-      .query("documents")
-      .withIndex("by_collection_doc", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("docTerms")
-      .withIndex("by_collection_docKey", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("postingChunks")
-      .withIndex("by_collection_term", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("docKeyCounters")
-      .withIndex("by_collection", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("terms")
-      .withIndex("by_collection_term", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("trigrams")
-      .withIndex("by_collection_term", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("filterPostings")
-      .withIndex("by_str", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("filterPostings")
-      .withIndex("by_num", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("facetCounts")
-      .withIndex("by_field", (q) => q.eq("collection", name))
-      .first(),
-    ctx.db
-      .query("facetPostings")
-      .withIndex("by_collection_field_value", (q) => q.eq("collection", name))
-      .first(),
-  ]);
-  return !!(doc || docTerm || postingChunk || docKeyCounter || term || trigram || filterPostingStr || filterPostingNum || facet || facetPosting);
+  const row = await ctx.db
+    .query("searchDocs")
+    .withIndex("by_collection_doc", (q) => q.eq("collection", name))
+    .first();
+  return !!row;
 }
 
 export async function blockIfDeletionInProgress(ctx: QueryCtx, name: string): Promise<void> {
@@ -90,97 +55,17 @@ async function deleteCollectionRowsBatch(
   name: string,
   batchSize: number,
 ): Promise<boolean> {
-  const postingChunks = await ctx.db
-    .query("postingChunks")
-    .withIndex("by_collection_term", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (postingChunks.length > 0) {
-    for (const r of postingChunks) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const docTerms = await ctx.db
-    .query("docTerms")
-    .withIndex("by_collection_docKey", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (docTerms.length > 0) {
-    for (const r of docTerms) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const documents = await ctx.db
-    .query("documents")
+  const rows = await ctx.db
+    .query("searchDocs")
     .withIndex("by_collection_doc", (q) => q.eq("collection", name))
     .take(batchSize);
-  if (documents.length > 0) {
-    for (const r of documents) await ctx.db.delete(r._id);
+  if (rows.length > 0) {
+    for (const r of rows) await ctx.db.delete(r._id);
     return false;
   }
-
-  const docKeyCounters = await ctx.db
-    .query("docKeyCounters")
-    .withIndex("by_collection", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (docKeyCounters.length > 0) {
-    for (const r of docKeyCounters) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const terms = await ctx.db
-    .query("terms")
-    .withIndex("by_collection_term", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (terms.length > 0) {
-    for (const r of terms) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const trigrams = await ctx.db
-    .query("trigrams")
-    .withIndex("by_collection_term", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (trigrams.length > 0) {
-    for (const r of trigrams) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const filterPostings = await ctx.db
-    .query("filterPostings")
-    .withIndex("by_str", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (filterPostings.length > 0) {
-    for (const r of filterPostings) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const numFilterPostings = await ctx.db
-    .query("filterPostings")
-    .withIndex("by_num", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (numFilterPostings.length > 0) {
-    for (const r of numFilterPostings) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const facets = await ctx.db
-    .query("facetCounts")
-    .withIndex("by_field", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (facets.length > 0) {
-    for (const r of facets) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  const facetPostings = await ctx.db
-    .query("facetPostings")
-    .withIndex("by_collection_field_value", (q) => q.eq("collection", name))
-    .take(batchSize);
-  if (facetPostings.length > 0) {
-    for (const r of facetPostings) await ctx.db.delete(r._id);
-    return false;
-  }
-
-  return true;
+  // searchDocs is drained; drain the vocabulary dictionary (terms + trigrams).
+  const dictDone = await clearCollectionTermsBatch(ctx, name, batchSize);
+  return dictDone;
 }
 
 async function cleanupCollectionBatchInternal(
@@ -194,6 +79,7 @@ async function cleanupCollectionBatchInternal(
 
   await clearCollectionCount(ctx, name);
   await clearCollectionSort(ctx, name, sortSpecs);
+  await clearCollectionFacets(ctx, name);
   const deletion = await loadDeletion(ctx, name);
   if (deletion) await ctx.db.delete(deletion._id);
   return { done: true };
@@ -303,6 +189,14 @@ export const createCollection = mutation({
     await blockIfDeletionInProgress(ctx, args.name);
     const storedFields = args.storedFields ?? "all";
     validateCollectionConfig({ ...args, storedFields });
+    // Assign + persist the generic-slot mapping. Deterministic + stable
+    // (first-declared field -> lowest free slot). assignSlots throws naming the
+    // cap if more fields than slots are declared.
+    // INVARIANT: createCollection must precede upsert -> every row carries a slotMap.
+    const slotMap = assignSlots({
+      searchFields: args.searchFields,
+      filterFields: args.filterFields,
+    });
     await ctx.db.insert("collections", {
       name: args.name,
       searchFields: args.searchFields,
@@ -311,6 +205,7 @@ export const createCollection = mutation({
       facetFields: args.facetFields,
       sortSpecs: args.sortSpecs,
       rankProfiles: args.rankProfiles,
+      slotMap,
     });
     return null;
   },
@@ -381,5 +276,75 @@ export const cleanupCollectionBatch = internalMutation({
       });
     }
     return result;
+  },
+});
+
+// Delete one bounded batch of EVERY component table (collection-agnostic, so it
+// also catches orphan rows whose collection row is already gone). Returns true
+// only when all six tables are fully drained.
+async function resetTablesBatch(ctx: MutationCtx, batchSize: number): Promise<boolean> {
+  const tables = [
+    "searchDocs",
+    "terms",
+    "trigrams",
+    "facetCounts",
+    "collections",
+    "deletions",
+  ] as const;
+  for (const table of tables) {
+    const rows = await ctx.db.query(table).take(batchSize);
+    if (rows.length > 0) {
+      for (const r of rows) await ctx.db.delete(r._id);
+      return false; // more rows in this (or a later) table — keep going
+    }
+  }
+  return true;
+}
+
+// FULL COMPONENT RESET: wipe every table + both aggregates back to empty,
+// regardless of how many collections exist. Batched + self-scheduling so it is
+// safe at any size (bounded reads/writes per call). The aggregates are cleared
+// in one shot via clearAll() (covers every namespace, including orphaned ones).
+// This is a destructive admin/dev operation — it drops ALL collections and their
+// entire index. The app must re-sync + re-seed afterward.
+export const resetAll = mutation({
+  args: { batchSize: v.optional(v.number()) },
+  returns: v.object({ done: v.boolean() }),
+  handler: async (ctx, args): Promise<{ done: boolean }> => {
+    const batchSize = Math.max(1, Math.floor(args.batchSize ?? DELETE_BATCH_SIZE));
+    let result = { done: false };
+    for (let i = 0; i < DELETE_BATCHES_PER_PUBLIC_CALL && !result.done; i++) {
+      const done = await resetTablesBatch(ctx, batchSize);
+      result = { done };
+    }
+    if (result.done) {
+      // Tables drained — clear both aggregates wholesale (all namespaces).
+      await clearAllCount(ctx);
+      await clearAllSort(ctx);
+      return { done: true };
+    }
+    await ctx.scheduler.runAfter(0, internal.collections.resetAllBatch, { batchSize });
+    return { done: false };
+  },
+});
+
+// Self-scheduling continuation of resetAll.
+export const resetAllBatch = internalMutation({
+  args: { batchSize: v.optional(v.number()) },
+  returns: v.object({ done: v.boolean() }),
+  handler: async (ctx, args): Promise<{ done: boolean }> => {
+    const batchSize = Math.max(1, Math.floor(args.batchSize ?? DELETE_BATCH_SIZE));
+    let result = { done: false };
+    for (let i = 0; i < DELETE_BATCHES_PER_PUBLIC_CALL && !result.done; i++) {
+      const done = await resetTablesBatch(ctx, batchSize);
+      result = { done };
+    }
+    if (result.done) {
+      await clearAllCount(ctx);
+      await clearAllSort(ctx);
+      return { done: true };
+    }
+    await ctx.scheduler.runAfter(0, internal.collections.resetAllBatch, { batchSize });
+    return { done: false };
   },
 });
