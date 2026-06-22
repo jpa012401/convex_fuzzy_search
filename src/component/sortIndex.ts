@@ -135,3 +135,9 @@ export async function clearCollectionSort(
     await sortAgg.clear(ctx, { namespace: ns(collection, canonicalSpecId(spec)) });
   }
 }
+
+// Empty EVERY [collection, specId] namespace at once (full component reset) —
+// covers orphaned sort namespaces whose collection row is already gone.
+export async function clearAllSort(ctx: MutationCtx) {
+  await sortAgg.clearAll(ctx);
+}

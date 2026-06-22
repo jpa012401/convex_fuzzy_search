@@ -364,6 +364,55 @@ export const dropProducts = mutation({
   },
 });
 
+// DESTRUCTIVE full reset of BOTH sides back to empty:
+//   - the component: every collection, all index tables, the typo dictionary,
+//     facet counters, and both aggregates (via search.resetAll — batched +
+//     self-scheduling, so `done:false` means a continuation is still draining).
+//   - the app's own tables: productDocs, placeDocs, profiles.
+// Bounded + self-scheduling on BOTH sides so it stays under the per-mutation
+// 4096-read limit at any scale. After this, re-sync + re-seed (scripts/seed.sh).
+// Dev/admin/test only.
+const APP_TABLES = ["productDocs", "placeDocs", "profiles"] as const;
+const RESET_BATCH = 500; // app-table rows deleted per call (well under the read limit)
+
+// Delete one bounded batch across the app tables. Returns true when all are empty.
+async function clearAppTablesBatch(ctx: MutationCtx): Promise<boolean> {
+  for (const table of APP_TABLES) {
+    const rows = await ctx.db.query(table).take(RESET_BATCH);
+    if (rows.length > 0) {
+      for (const row of rows) await ctx.db.delete(row._id);
+      return false;
+    }
+  }
+  return true;
+}
+
+export const resetEverything = mutation({
+  args: {},
+  handler: async (ctx): Promise<{ component: { done: boolean }; appDone: boolean }> => {
+    // Kick off the component reset once (it self-schedules its own teardown chain).
+    const component = await search.resetAll(ctx);
+    // Clear a bounded batch of the app tables; self-schedule the rest.
+    const appDone = await clearAppTablesBatch(ctx);
+    if (!appDone) {
+      await ctx.scheduler.runAfter(0, api.products.clearAppTablesChain, {});
+    }
+    return { component, appDone };
+  },
+});
+
+// Self-scheduling continuation that drains the app tables in bounded batches.
+export const clearAppTablesChain = mutation({
+  args: {},
+  handler: async (ctx): Promise<{ done: boolean }> => {
+    const done = await clearAppTablesBatch(ctx);
+    if (!done) {
+      await ctx.scheduler.runAfter(0, api.products.clearAppTablesChain, {});
+    }
+    return { done };
+  },
+});
+
 // Replays the app-owned productDocs back through the component's upsert,
 // rebuilding index rows for any newly-added structural field, then clears the
 // collection's pending flag when done. Self-chains in the background like

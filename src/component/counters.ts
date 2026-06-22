@@ -68,3 +68,8 @@ export async function clearCollectionCount(
 ) {
   await docAgg.clear(ctx, { namespace: collection });
 }
+
+// Empty EVERY collection's namespace at once (used by the full component reset).
+export async function clearAllCount(ctx: MutationCtx) {
+  await docAgg.clearAll(ctx);
+}

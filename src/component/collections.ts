@@ -2,9 +2,9 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
-import { clearCollectionCount } from "./counters";
+import { clearCollectionCount, clearAllCount } from "./counters";
 import { clearCollectionFacets } from "./facetCounts";
-import { canonicalSpecId, clearCollectionSort } from "./sortIndex";
+import { canonicalSpecId, clearCollectionSort, clearAllSort } from "./sortIndex";
 import { clearCollectionTermsBatch } from "./termDict";
 import type { Infer } from "convex/values";
 import { collectionDocValidator, rankProfileValidator, rankTermValidator, sortSpecValidator } from "./schema";
@@ -276,5 +276,75 @@ export const cleanupCollectionBatch = internalMutation({
       });
     }
     return result;
+  },
+});
+
+// Delete one bounded batch of EVERY component table (collection-agnostic, so it
+// also catches orphan rows whose collection row is already gone). Returns true
+// only when all six tables are fully drained.
+async function resetTablesBatch(ctx: MutationCtx, batchSize: number): Promise<boolean> {
+  const tables = [
+    "searchDocs",
+    "terms",
+    "trigrams",
+    "facetCounts",
+    "collections",
+    "deletions",
+  ] as const;
+  for (const table of tables) {
+    const rows = await ctx.db.query(table).take(batchSize);
+    if (rows.length > 0) {
+      for (const r of rows) await ctx.db.delete(r._id);
+      return false; // more rows in this (or a later) table — keep going
+    }
+  }
+  return true;
+}
+
+// FULL COMPONENT RESET: wipe every table + both aggregates back to empty,
+// regardless of how many collections exist. Batched + self-scheduling so it is
+// safe at any size (bounded reads/writes per call). The aggregates are cleared
+// in one shot via clearAll() (covers every namespace, including orphaned ones).
+// This is a destructive admin/dev operation — it drops ALL collections and their
+// entire index. The app must re-sync + re-seed afterward.
+export const resetAll = mutation({
+  args: { batchSize: v.optional(v.number()) },
+  returns: v.object({ done: v.boolean() }),
+  handler: async (ctx, args): Promise<{ done: boolean }> => {
+    const batchSize = Math.max(1, Math.floor(args.batchSize ?? DELETE_BATCH_SIZE));
+    let result = { done: false };
+    for (let i = 0; i < DELETE_BATCHES_PER_PUBLIC_CALL && !result.done; i++) {
+      const done = await resetTablesBatch(ctx, batchSize);
+      result = { done };
+    }
+    if (result.done) {
+      // Tables drained — clear both aggregates wholesale (all namespaces).
+      await clearAllCount(ctx);
+      await clearAllSort(ctx);
+      return { done: true };
+    }
+    await ctx.scheduler.runAfter(0, internal.collections.resetAllBatch, { batchSize });
+    return { done: false };
+  },
+});
+
+// Self-scheduling continuation of resetAll.
+export const resetAllBatch = internalMutation({
+  args: { batchSize: v.optional(v.number()) },
+  returns: v.object({ done: v.boolean() }),
+  handler: async (ctx, args): Promise<{ done: boolean }> => {
+    const batchSize = Math.max(1, Math.floor(args.batchSize ?? DELETE_BATCH_SIZE));
+    let result = { done: false };
+    for (let i = 0; i < DELETE_BATCHES_PER_PUBLIC_CALL && !result.done; i++) {
+      const done = await resetTablesBatch(ctx, batchSize);
+      result = { done };
+    }
+    if (result.done) {
+      await clearAllCount(ctx);
+      await clearAllSort(ctx);
+      return { done: true };
+    }
+    await ctx.scheduler.runAfter(0, internal.collections.resetAllBatch, { batchSize });
+    return { done: false };
   },
 });

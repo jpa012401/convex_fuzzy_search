@@ -147,6 +147,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         } | null,
         Name
       >;
+      resetAll: FunctionReference<
+        "mutation",
+        "internal",
+        { batchSize?: number },
+        { done: boolean },
+        Name
+      >;
     };
     configSync: {
       applyCollectionConfig: FunctionReference<
