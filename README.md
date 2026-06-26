@@ -9,6 +9,11 @@ running entirely inside your Convex deployment. Writes are durable Convex
 mutations and become searchable immediately. No external service, no sync
 pipeline.
 
+Text retrieval runs on Convex's **managed `.searchIndex`** (O(log n), flat with
+collection size); custom ranking, filtering, faceting, and sort layers are built
+on top for the full feature set. Everything is still plain Convex tables, queries,
+and mutations — nothing leaves your deployment.
+
 > **Independent, not affiliated.** This is a from-scratch implementation. It is
 > **not** built on, a client for, or affiliated with Typesense or Elasticsearch.
 > It borrows two of their *ideas*: a **Typesense-style result envelope**
@@ -18,8 +23,9 @@ pipeline.
 > and mutations — nothing leaves your deployment.
 
 **Documentation:** [Overview](./docs/overview.md) (what it is + how it works) ·
-[Usage guide](./docs/usage.md) (install, API, ranking profiles, reindex). This
-README is the quick tour; the guides are the full reference.
+[Usage guide](./docs/usage.md) (install, API, ranking profiles, reindex) ·
+[Technical](./docs/TECH.md) (current architecture & internals). This README is
+the quick tour; the guides are the full reference.
 
 Found a bug? Feature request?
 [File it here](https://github.com/elevatech/fuzzy-search/issues).
@@ -30,10 +36,10 @@ Found a bug? Feature request?
   tokenization; multi-word queries combine with AND.
 - **Prefix matching (search-as-you-type)** — the final query token matches any
   indexed term it prefixes.
-- **Typo tolerance** — misspelled tokens still match via a trigram index plus a
-  bounded Levenshtein check, with a per-token-length typo budget.
-- **Relevance ranking** — hits scored by `text_match` (exact > prefix > typo),
-  best-first.
+- **Typo tolerance** — misspelled tokens are corrected on miss via a trigram
+  dictionary plus a bounded Levenshtein check, with a per-token-length typo budget.
+- **Relevance ranking** — hits carry a normalized `score` derived from the native
+  `.searchIndex` rank position (best-first).
 - **Highlighting** — automatic; each matched searched field returns
   `{ snippet, matched_tokens }` with matched words wrapped in `<mark>…</mark>`
   (rest HTML-escaped, safe to render).
@@ -45,7 +51,7 @@ Found a bug? Feature request?
   ranges, combined with `&&`/`||` and parentheses.
 - **Faceting (`facet_counts`)** — value counts for declared facet fields.
 - **Result envelope** — `{ found, found_approximate, reranked, page, out_of,
-  hits, facet_counts }`.
+  hits, facet_counts }`; each hit is `{ id, score, highlight }`.
 - **Synchronous writes** — searchable the moment the mutation commits; no
   indexing lag.
 - **Collections** — named, with their own search fields and stored projection.
@@ -72,22 +78,31 @@ export default app;
 
 ## Quick start
 
+Declare your collections in the constructor and reconcile them once after deploy
+with `sync()` (idempotent). This is the recommended config-driven pattern:
+
 ```ts
 import { components } from "./_generated/api";
 import { FuzzySearch } from "@elevatech/fuzzy-search";
 
-const search = new FuzzySearch(components.fuzzySearch);
-```
-
-Create a collection and insert documents from a **mutation**:
-
-```ts
-await search.createCollection(ctx, {
-  name: "products",
-  searchFields: ["name", "description"],
-  storedFields: "all",
+const search = new FuzzySearch(components.fuzzySearch, {
+  collections: {
+    products: {
+      searchFields: ["name", "description"],
+      // Store only the fields the index needs; your app keeps the serving copy.
+      storedFields: "derived",
+    },
+  },
 });
 
+// In a mutation, run once after deploy (or whenever the config changes):
+await search.sync(ctx);
+```
+
+Insert documents from a **mutation** (the `id` is your own string key — e.g. a
+Convex `_id`):
+
+```ts
 await search.upsert(ctx, {
   collection: "products",
   id: "1",
@@ -95,7 +110,8 @@ await search.upsert(ctx, {
 });
 ```
 
-Search from a **query**:
+Search from a **query**. Hits are `{ id, score, highlight }` — the component
+returns **ids, not documents**, so look up your own records to render them:
 
 ```ts
 const results = await search.search(ctx, {
@@ -104,27 +120,33 @@ const results = await search.search(ctx, {
   page: 1,
   perPage: 10,
 });
+
+// Hydrate the matched ids from your app's own table, preserving order
+// (here the id is the Convex _id of your serving row):
+const docs = await Promise.all(
+  results.hits.map((h) => ctx.db.get(h.id as Id<"products">)),
+);
 ```
 
 See [`example/convex/products.ts`](./example/convex/products.ts) for a complete,
-runnable example.
+runnable example (including the `hydrate()` helper).
 
 ## Result shape
 
 ```jsonc
 {
   "found": 2,              // total matches across all pages
-  "found_approximate": false, // true only when a hot-term scan was capped (see Scale)
+  "found_approximate": false, // true when the candidate window was capped (see Scale)
   "reranked": true,
   "page": 1,
   "out_of": 6,             // total documents in the collection
   "hits": [
     {
-      "document": { /* stored projection of the matched doc */ },
+      "id": "1",           // your own string id — look the document up yourself
+      "score": 0.83,       // normalized relevance (0..1), higher is better (0 in browse)
       "highlight": {       // one entry per searched field that matched; {} in browse
         "name": { "snippet": "Red <mark>Shoe</mark>", "matched_tokens": ["Shoe"] }
-      },
-      "text_match": 5      // RAW relevance score; higher is better (0 in browse)
+      }
     }
   ],
   "facet_counts": [        // one entry per requested facetBy field; [] if none
@@ -134,18 +156,35 @@ runnable example.
 }
 ```
 
+> Hits never include the document body — the component returns `id` + `score` +
+> `highlight` only. Your app owns the serving copy and hydrates by `id` (see the
+> Quick start, or the `hydrate()` helper in the example).
+
 ## API
 
 All methods take Convex `ctx` first. Mutating methods run in a mutation (or
 action); read methods in a query (or action).
 
-### `createCollection(ctx, { name, searchFields, storedFields?, filterFields?, facetFields?, sortSpecs? })`
+### `sync(ctx)` *(config-driven setup)*
 
-Creates a collection.
+Reconciles every collection declared in the `FuzzySearch` constructor's
+`collections` option to match the code config. Idempotent and O(1) per collection
+(reads no documents) — drive it once post-deploy and whenever the config changes.
+Returns `{ name, kind: "create" | "update", pendingFields: string[] }[]`; a
+non-empty `pendingFields` means a newly-added structural field needs a
+[reindex](#migration-reindex-after-a-config-change). This is the recommended way
+to set up collections (see [Quick start](#quick-start)).
+
+### `createCollection(ctx, { name, searchFields, storedFields?, filterFields?, facetFields?, sortSpecs?, rankProfiles? })`
+
+Imperative alternative to `sync` — creates one collection directly.
 
 - `searchFields` — fields tokenized and indexed for matching.
-- `storedFields` — projection returned in hits: `"all"` (whole doc) or a
-  `string[]`.
+- `storedFields` — the index-relevant projection the component persists per doc:
+  `"derived"` (only the fields the index/filter/sort/rank layers need —
+  recommended; your app keeps the serving copy), `"all"` (the whole doc), or an
+  explicit `string[]`. Hits **never** return this projection — it is internal;
+  the component always returns `id` + `score` + `highlight`.
 - `filterFields` — `{ field, type: "string" | "number" }[]` declaring which
   fields may appear in `filterBy` and how they compare. A field must be declared
   to be filterable.
@@ -155,6 +194,10 @@ Creates a collection.
   orders to index for scalable unfiltered browse-by-sort (each inner array is
   one ordered spec; a single field is a length-1 spec). All sort fields are
   numeric.
+- `rankProfiles` — named windowed re-rank profiles (a scoring DSL with
+  `field` / `flag` / `setBoost` / `recencyDecay` / `geoDistance` / `relevance`
+  terms over a `base` order and `window`), invoked via the `rank` search param.
+  See the [Usage guide](./docs/usage.md) for the full DSL.
 
 When `storedFields` is an explicit list, every `filterFields`, `facetFields`,
 and `sortSpecs` field **must** be included in it (validated at create time).
@@ -167,11 +210,11 @@ data.
 ### `upsert(ctx, { collection, id, doc })` · `upsertMany(ctx, { collection, docs })` · `delete(ctx, { collection, id })`
 
 Insert/replace one document (by consumer-provided string `id`; re-upsert
-**replaces**, not merges), the batch form, or remove one. The component does not
-auto-inject `id` into the stored doc — include it in `doc` if you want it back in
-hits.
+**replaces**, not merges), the batch form, or remove one. The `id` is what
+`search` returns in each hit — keep your serving copy keyed by it so you can
+hydrate results.
 
-### `search(ctx, { collection, q, page?, perPage?, queryBy?, filterBy?, facetBy?, maxFacetValues?, rankBy?, sortBy? })`
+### `search(ctx, { collection, q, page?, perPage?, queryBy?, filterBy?, facetBy?, maxFacetValues?, rankBy?, sortBy?, rank? })`
 
 Runs a search and returns the [result shape](#result-shape) above.
 
@@ -186,18 +229,36 @@ Runs a search and returns the [result shape](#result-shape) above.
   throws.
 - `maxFacetValues` — cap on values returned per facet (default `10`).
 - `rankBy` / `sortBy` — change **ordering only**; they never change the reported
-  `text_match` (see below).
+  `score` (see below).
+- `rank` — invoke a named `rankProfile` for a windowed re-rank:
+  `{ profile, weights?, context? }` (`context` supplies `now`, `origin` for
+  `geoDistance`, and `sets` for `setBoost`). See the [Usage guide](./docs/usage.md).
+
+### `pendingFields(ctx, collection)` · `clearPending(ctx, collection)`
+
+`pendingFields` lists structural fields awaiting reindex (empty when fully
+indexed); `clearPending` marks a collection fully reindexed after you replay your
+documents. See [Migration](#migration-reindex-after-a-config-change).
+
+### `stats(ctx, collection)` · `resetAll(ctx, batchSize?)`
+
+`stats` returns an index-health snapshot `{ out_of, facets[], sortSpecs[] }`
+(useful for validating a migration). `resetAll` is a **DESTRUCTIVE** batched,
+self-scheduling wipe of every collection and all index data; returns `{ done }`
+(`false` means a continuation is still draining). Dev/admin/test only.
 
 ## Ranking & sort
 
-**`text_match` is always the RAW relevance score** (exact > prefix > typo). Per
-token, exact = `3`, prefix = `2`, typo = `2 − 0.5 × distance`; a document's score
-is the sum of its best per-token scores. `rankBy` and `sortBy` only reorder.
+**`score` is always the RAW relevance score**, normalized to `0..1` and derived
+from the document's native `.searchIndex` rank position:
+`score = (total − rankPos) / total` (best hit `1.0`, descending toward `1/total`;
+`0` in browse mode). `rankBy` and `sortBy` only reorder — they never change the
+reported `score`.
 
 **`rankBy`** — `{ text?: number; fields?: { field, weight }[] }`. Ordering score:
 
 ```text
-score = (text ?? 1) * text_match + Σ ( weight * Number(stored[field] || 0) )
+ordering = (text ?? 1) * score + Σ ( weight * Number(stored[field] || 0) )
 ```
 
 A missing/non-numeric field contributes `0`; `text` defaults to `1`. (Tip: to
@@ -247,28 +308,29 @@ supported.
   stopwords, no stemming (`"Red-Shoe!"` → `["red", "shoe"]`).
 - **Multi-word = AND** — every token must be present.
 - **Prefix on the last token only**; earlier tokens match in full (exact/typo).
-- **Typo budget by length** — ≤ 3 chars: 0 typos, 4–7: 1, ≥ 8: 2.
-- **Empty query = match-all**, paginated, `text_match` `0`.
+- **Typo budget by length** — ≤ 3 chars: 0 typos, 4–7: 1, ≥ 8: 2 (applied by the
+  on-miss spell-suggest pass).
+- **Prefix minimum length** — the native index expands prefixes from ~5 chars;
+  shorter fragments may not match as-you-type.
+- **Empty query = match-all**, paginated, `score` `0`.
 - **Synchronous** — committed writes are immediately searchable.
 - **Replace-by-id** — re-upserting an `id` fully replaces the prior document.
 
 ## Scale
 
-Read paths stay off the full collection at large scale (the Phase 4 program,
-S1–S5, all implemented):
+Read paths stay off the full collection at large scale:
 
 - **`out_of`** is an O(log n) aggregate count — no scan.
-- **Text queries** load only matched documents (postings candidates), and the
-  matching is **driver-token bounded**: the most selective token drives the AND
-  and the rest are verified per-doc, so reads scale with result size, not with
-  how common a word is.
-- **Filtering** resolves through a write-maintained `filters` index — `filterBy`
+- **Text queries** run on Convex's native `.searchIndex` (O(log n), flat with
+  collection size); the component then re-imposes AND, re-ranks, and tallies over
+  a bounded candidate window, so reads scale with the window, not the collection.
+- **Filtering** resolves through a write-maintained filter index — `filterBy`
   (and browse+filter) reads only matching ids, no scan.
 - **Browse + facets** are served from write-maintained per-value counters; **browse
   + a declared `sortBy`** pages off a write-maintained composite-key sort index.
-- **Hot terms are bounded.** A driver token matching more rows than the internal
-  budget (~4000) is capped; the result is returned with `found_approximate: true`
-  (and `found` is the exact term count for a single-exact-term query).
+- **Candidate window is bounded.** When the native result set exceeds the internal
+  re-rank window, the result is returned with `found_approximate: true` (so `found`
+  is a floor, not an exact total).
 
 **Remaining limits.** Browse with a **live `rankBy`** (weighted blend, no fixed
 key) still loads the collection — precompute the blend into a numeric field and
@@ -286,16 +348,17 @@ or a collection that just gained a structural field (`filterFields`/`facetFields
 index rows. Because the component stores only the index-relevant projection
 (`storedFields: "derived"`), it can't rebuild from its own storage: **the app
 replays its own copy** of each document through `upsert`/`upsertMany`, which
-rebuilds every index row (postings, filters, facets, sort) under the current
-config. `sync` flags fields awaiting reindex (`search.pendingFields`); clear them
-with `search.clearPending` once the replay finishes. See
+rebuilds every index row (native search doc, filter, facet, and sort rows) under
+the current config. `sync` flags fields awaiting reindex (`search.pendingFields`);
+clear them with `search.clearPending` once the replay finishes. See
 [`example/convex/products.ts`](./example/convex/products.ts) for the self-chaining
 `reindex` driver that pages the app's own `productDocs` table.
 
-- Matching depends on the `terms`/`trigrams` tables — pre-existing docs return
-  **zero results until re-upserted**.
-- Replay in bounded pages (the example uses `100`) to stay under Convex's
-  4,096-reads-per-call limit.
+- Core matching is served by the native `.searchIndex`; the `trigrams` dictionary
+  powers the optional on-miss spell-suggest. Pre-existing docs return
+  **zero results until re-upserted** (and need re-upsert to populate typo
+  correction).
+- Replay in bounded pages to stay under Convex's 4,096-reads-per-call limit.
 
 ## Running the example
 
@@ -309,7 +372,16 @@ npm run dev:frontend   # Vite frontend (second terminal)
 ```
 
 Click **Seed 6** to create the `products` collection and load samples, then
-search (`aurora shoe`, `aur` for prefix, `aurra` for typo tolerance).
+search (`aurora shoe` for matching, `jacke` for prefix-as-you-type, `jaket` for
+typo tolerance). The native index expands prefixes from ~5 chars, so a 3-letter
+fragment like `aur` will not match as-you-type.
+
+Or seed from the CLI (these scripts wrap the full sync → seed lifecycle):
+
+```sh
+npm run seed           # sync the collection + load the synthetic dataset
+npm run reset          # DESTRUCTIVE: wipe the component + app tables
+```
 
 **Stress test —** [`example/convex/dataset.ts`](./example/convex/dataset.ts)
 deterministically generates 5,000 products with rich fields plus a precomputed
@@ -329,5 +401,12 @@ The multi-phase design lives in
 - [Phase 1 — exact tokenized search](./docs/superpowers/specs/2026-06-13-typesense-convex-phase1-design.md)
 - [Phase 2 — filtering & faceting](./docs/superpowers/specs/2026-06-13-typesense-convex-phase2-design.md)
 - [Phase 3 — typo tolerance, weighted ranking & highlighting](./docs/superpowers/specs/2026-06-13-typesense-convex-phase3-design.md)
-- Phase 4 — arbitrary-scale hardening (S1 lean reads, S2 indexed filtering, S3
-  facet counters, S4 sort indexes, S5 hot-term bounding)
+- [Phase 4 — arbitrary-scale hardening](./docs/superpowers/specs/2026-06-13-typesense-convex-phase4-design.md)
+  (S1 [lean reads](./docs/superpowers/specs/2026-06-14-phase4-s1-aggregate-lean-reads-design.md),
+  S2 [indexed filtering](./docs/superpowers/specs/2026-06-14-phase4-s2-indexed-filtering-design.md),
+  S3 [facet counters](./docs/superpowers/specs/2026-06-14-phase4-s3-facet-counters-design.md),
+  S4 [sort indexes](./docs/superpowers/specs/2026-06-14-phase4-s4-sort-indexes-design.md),
+  S5 [hot-term bounding](./docs/superpowers/specs/2026-06-14-phase4-s5-hot-term-bounding-design.md))
+
+The component was subsequently rebuilt onto Convex's managed `.searchIndex`; see
+[`docs/TECH.md`](./docs/TECH.md) for the current architecture.
